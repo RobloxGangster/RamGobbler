@@ -61,7 +61,7 @@ from typing import Dict, List, Optional, Tuple, Deque
 from groups import group_totals
 from metrics import Metrics
 from matching import TargetSpec, matches
-from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
+from scheduler import jittered_interval, gate_reason, window_active
 
 # --- Platform check & imports ----------------------------------------------
 if os.name == "nt":
@@ -212,7 +212,7 @@ def is_system_process(p: psutil.Process) -> bool:
             return True
         try:
             user = p.username()
-            if user.upper().endswith("\\\\SYSTEM") or user.upper().startswith("NT AUTHORITY\\\\"):
+            if user.upper().endswith("\\SYSTEM") or user.upper().startswith("NT AUTHORITY\\"):
                 return True
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             pass
@@ -248,36 +248,70 @@ def rss_mb(pid: int) -> Optional[float]:
         return None
 
 # optional elevated helper ----------------------------------------------------
-HELPER_PIPE = r"\\.\pipe\RamGobblerHelper"
+HELPER_HOST = "127.0.0.1"
+HELPER_PORT = 9646
+
+
+class HelperClient:
+    def __init__(self, host: str = HELPER_HOST, port: int = HELPER_PORT):
+        self.host = host
+        self.port = port
+
+    def trim(self, pid: int, strategy: str) -> Tuple[bool, float]:
+        try:
+            import socket
+            req = (
+                json.dumps({"action": "trim", "pid": int(pid), "strategy": strategy}).encode("utf-8")
+                + b"\n"
+            )
+            with socket.create_connection((self.host, self.port), timeout=1.0) as s:
+                s.sendall(req)
+                data = b""
+                while b"\n" not in data:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+            resp = json.loads(data.decode("utf-8").strip())
+            return bool(resp.get("ok")), float(resp.get("delta_mb") or 0.0)
+        except Exception:
+            return False, 0.0
+
+
+_helper_client = HelperClient()
+
 
 def helper_trim(pid: int, strategy: str) -> Tuple[bool, float]:
     """Request an elevated trim via helper service."""
-    try:
-        import win32file  # type: ignore
-    except Exception:
-        return False, 0.0
-    try:
-        handle = win32file.CreateFile(
-            HELPER_PIPE,
-            win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-            0,
-            None,
-            win32file.OPEN_EXISTING,
-            0,
-            None,
-        )
-    except Exception:
-        return False, 0.0
-    try:
-        req = json.dumps({"action": "trim", "pid": int(pid), "strategy": strategy}).encode("utf-8")
-        win32file.WriteFile(handle, req)
-        resp = win32file.ReadFile(handle, 65536)[1]
-        data = json.loads(resp.decode("utf-8"))
-        return bool(data.get("ok")), float(data.get("delta_mb") or 0.0)
-    except Exception:
-        return False, 0.0
-    finally:
-        win32file.CloseHandle(handle)
+    return _helper_client.trim(pid, strategy)
+
+
+def run_helper_server(host: str = HELPER_HOST, port: int = HELPER_PORT) -> None:
+    """Simple blocking helper server for TCP-based trims."""
+    import socket
+
+    srv = socket.socket()
+    srv.bind((host, port))
+    srv.listen(5)
+    while True:
+        conn, _ = srv.accept()
+        with conn:
+            data = b""
+            while b"\n" not in data:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            try:
+                req = json.loads(data.decode("utf-8").strip())
+                pid = int(req.get("pid", 0))
+                strategy = req.get("strategy", "standard")
+                ok = empty_working_set(pid) if strategy == "standard" else reset_working_set(pid)
+                delta = rss_mb(pid) if ok else 0.0
+                resp = json.dumps({"ok": bool(ok), "delta_mb": delta}).encode("utf-8") + b"\n"
+            except Exception:
+                resp = b'{"ok": false}\n'
+            conn.sendall(resp)
 
 # --- Foreground / fullscreen / battery -------------------------------------
 def get_foreground_pid() -> Optional[int]:
@@ -460,7 +494,7 @@ class Config:
         self.battery_mode: str = "slow"  # off | slow | pause
         self.battery_slow_factor: float = 2.0
         # scheduling / gating
-        self.maintenance_window: dict = {"start": "00:00", "end": "00:00", "aggressive": False}
+        self.maintenance_window: dict = {"start": "", "end": "", "aggressive": False}
         self.idle_seconds: int = 0
         self.jitter_pct: int = 10
         self.metered: bool = False
@@ -555,24 +589,20 @@ def list_processes(include_system: bool) -> List[psutil.Process]:
 def match_pids(target: Target) -> List[int]:
     """Return a list of PIDs matching ``target``."""
 
-    spec = TargetSpec(key=target.key, match_by=target.match_by)
     pids: List[int] = []
     for p in psutil.process_iter(attrs=["pid", "name", "exe", "cmdline", "ppid"]):
         try:
-            parent_name = ""
-            ppid = p.info.get("ppid")
-            if ppid:
-                try:
-                    parent_name = psutil.Process(ppid).name()
-                except Exception:
-                    parent_name = ""
             info = {
-                "name": p.info.get("name"),
-                "exe": p.info.get("exe"),
-                "cmdline": p.info.get("cmdline"),
-                "parent": parent_name,
+                "name": p.info.get("name") or "",
+                "exe": p.info.get("exe") or "",
+                "cmdline": p.info.get("cmdline") or [],
+                "parent": (
+                    psutil.Process(p.info["ppid"]).name()
+                    if p.info.get("ppid")
+                    else ""
+                ),
             }
-            if matches(info, spec):
+            if matches(info, TargetSpec(key=target.key, match_by=target.match_by)):
                 pids.append(p.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -702,7 +732,9 @@ class Gobbler(threading.Thread):
                     self.on_result(idx, reason_cool)
                     with self._lock:
                         try:
-                            self.config.targets[idx].last_skip_reason = reason_cool
+                            tgt = self.config.targets[idx]
+                            tgt.last_result = reason_cool
+                            tgt.last_skip_reason = reason_cool
                         except IndexError:
                             pass
                     self._record_event(idx, {"ts": now_ts, "type": "skip", "reason": reason_cool})
@@ -711,7 +743,9 @@ class Gobbler(threading.Thread):
                     self.on_result(idx, global_reason)
                     with self._lock:
                         try:
-                            self.config.targets[idx].last_skip_reason = global_reason
+                            tgt = self.config.targets[idx]
+                            tgt.last_result = global_reason
+                            tgt.last_skip_reason = global_reason
                         except IndexError:
                             pass
                     continue
@@ -720,7 +754,9 @@ class Gobbler(threading.Thread):
                     self.on_result(idx, gate)
                     with self._lock:
                         try:
-                            self.config.targets[idx].last_skip_reason = gate
+                            tgt = self.config.targets[idx]
+                            tgt.last_result = gate
+                            tgt.last_skip_reason = gate
                         except IndexError:
                             pass
                     continue
@@ -735,7 +771,9 @@ class Gobbler(threading.Thread):
                     self.on_result(idx, reason)
                     with self._lock:
                         try:
-                            self.config.targets[idx].last_skip_reason = reason
+                            tgt = self.config.targets[idx]
+                            tgt.last_result = reason
+                            tgt.last_skip_reason = reason
                         except IndexError:
                             pass
                     continue
@@ -823,7 +861,6 @@ class Gobbler(threading.Thread):
                 if helper_needed and not self.helper_warned:
                     msg += " (helper not running)"
                     self.helper_warned = True
-                self.metrics.add_event(event_ts, total_delta, trim_reason, t.strategy)
                 self.on_result(idx, msg)
                 if total_delta > 0:
                     self.on_delta(total_delta)
@@ -1555,6 +1592,9 @@ class MainWindow(QMainWindow):
         self.session_reclaimed_total = 0.0
         self.metrics = Metrics(METRICS_PATH)
         self.metrics.load()
+        self._metrics_timer = QTimer(self)
+        self._metrics_timer.timeout.connect(lambda: self.metrics.save())
+        self._metrics_timer.start(10000)
         self.gobbler = Gobbler(self.config, self.metrics, self._on_trim_result, self._on_delta)
         self.gobbler.start()
         self._hotkey_registered = False
@@ -1792,9 +1832,16 @@ class MainWindow(QMainWindow):
 
     def _quit(self):
         self._unregister_hotkey()
-        try: self.gobbler.stop()
-        except Exception: pass
-        self.tray.hide(); QApplication.instance().quit()
+        try:
+            self.gobbler.stop()
+        except Exception:
+            pass
+        try:
+            self.metrics.save()
+        except Exception:
+            pass
+        self.tray.hide()
+        QApplication.instance().quit()
 
     def _tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger: self._toggle_window()
@@ -1877,8 +1924,14 @@ class MainWindow(QMainWindow):
         delta = 0.0
         if before is not None and after is not None:
             delta = max(0.0, before - after); self.session_reclaimed_total += delta; self._update_total_label()
-        if ok: self.statusBar().showMessage(f"Trimmed {name} (PID {pid}) −{delta:.1f} MB", 3000)
-        else: QMessageBox.warning(self, APP_NAME, "Could not trim this process. Try running as Administrator.")
+        if ok:
+            self.statusBar().showMessage(f"Trimmed {name} (PID {pid}) −{delta:.1f} MB", 3000)
+        else:
+            QMessageBox.warning(self, APP_NAME, "Could not trim this process. Try running as Administrator.")
+        try:
+            self.metrics.add_event(time.time(), float(delta), "manual", "standard")
+        except Exception:
+            pass
 
     def _trim_visible_targets(self):
         total_pids = 0; trimmed_ok = 0; total_delta = 0.0
@@ -1961,6 +2014,11 @@ class MainWindow(QMainWindow):
             self._update_total_label()
             if self.stack.currentWidget() == self.dashboard:
                 self.dashboard.refresh(self.session_reclaimed_total)
+            try:
+                reason = "maintenance" if window_active(self.config.maintenance_window, datetime.now()) else "timer"
+                self.metrics.add_event(time.time(), float(delta_mb), reason=reason, strategy="standard")
+            except Exception:
+                pass
 
     def _autostart_targets(self):
         for i, t in enumerate(self.config.targets):
@@ -1999,6 +2057,10 @@ def main():
     win = MainWindow(config)
     win.show()
     rc = app.exec()
+    try:
+        win.metrics.save()
+    except Exception:
+        pass
     config.save()
     return rc
 
