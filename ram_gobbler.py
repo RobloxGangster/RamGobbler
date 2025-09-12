@@ -50,9 +50,14 @@ import sys
 import time
 import threading
 import shutil
+import uuid
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from collections import deque
+from itertools import zip_longest
+from typing import Dict, List, Optional, Tuple, Deque
+from groups import group_totals
+from metrics import Metrics
 from matching import matches
 from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
 
@@ -78,13 +83,15 @@ from PySide6.QtWidgets import (
     QLineEdit, QTableView, QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox,
     QFileDialog, QMessageBox, QAbstractItemView, QSplitter, QStyle,
     QTableWidget, QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout,
-    QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox
+    QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox,
+    QListWidget, QInputDialog, QStackedWidget
 )
 
 APP_NAME = "Ram Gobbler"
 CONFIG_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "RamGobbler")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
+METRICS_PATH = os.path.join(CONFIG_DIR, "metrics.json")
 DEFAULT_INTERVAL = 15  # seconds
 
 # --- Win32: APIs ------------------------------------------------------------
@@ -333,9 +340,17 @@ def set_startup_enabled(enabled: bool) -> Tuple[bool, str]:
 
 # --- Data model -------------------------------------------------------------
 @dataclass
+class Group:
+    id: str
+    name: str
+    color: Optional[str] = None
+
+
+@dataclass
 class Target:
     key: str               # identifier to match (name/path/cmdline/parent)
     match_by: str          # 'name', 'path', 'cmdline', or 'parent'
+    group_id: str = ""
     active: bool = False
     interval_sec: int = DEFAULT_INTERVAL
     last_trim_ts: float = 0.0
@@ -357,9 +372,11 @@ class Target:
     schedule: Optional[dict] = None  # {days:[0..6], start:"HH:MM", end:"HH:MM", idle_only: bool}
     last_skip_reason: str = ""
     last_trim_reason: str = ""
+    _events: Deque[dict] = field(default_factory=lambda: deque(maxlen=200), repr=False)
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        d.pop("_events", None)
         d["history"] = self.history[-40:]
         return d
 
@@ -387,6 +404,7 @@ class Target:
             schedule=d.get("schedule"),
             last_skip_reason=d.get("last_skip_reason", ""),
             last_trim_reason=d.get("last_trim_reason", ""),
+            group_id=d.get("group_id", ""),
         )
 
 # --- Config -----------------------------------------------------------------
@@ -394,6 +412,7 @@ class Config:
     def __init__(self, path: str):
         self.path = path
         self.targets: List[Target] = []
+        self.groups: List[Group] = []
         self.theme: str = "dark"
         self.tray_mode: bool = True
         self.startup_enabled: bool = False
@@ -424,6 +443,8 @@ class Config:
             with open(self.path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
             self.targets = [Target.from_dict(t) for t in raw.get("targets", [])]
+            self.groups = [Group(id=g.get("id", ""), name=g.get("name", ""), color=g.get("color"))
+                            for g in raw.get("groups", [])]
             self.theme = raw.get("theme", self.theme)
             self.tray_mode = bool(raw.get("tray_mode", self.tray_mode))
             self.startup_enabled = bool(raw.get("startup_enabled", is_startup_enabled()))
@@ -457,6 +478,7 @@ class Config:
             pass
         raw = {
             "targets": [t.to_dict() for t in self.targets],
+            "groups": [asdict(g) for g in self.groups],
             "theme": self.theme,
             "tray_mode": self.tray_mode,
             "startup_enabled": self.startup_enabled,
@@ -516,17 +538,23 @@ def match_pids(target: Target) -> List[int]:
 
 # --- Background trimmer thread ---------------------------------------------
 class Gobbler(threading.Thread):
-    def __init__(self, config: Config, on_result, on_delta):
+    def __init__(self, config: Config, metrics: Metrics, on_result, on_delta):
         super().__init__(daemon=True)
         self.config = config
+        self.metrics = metrics
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.on_result = on_result
         self.on_delta = on_delta
         self.helper_warned = False
+        self._last_flush = time.time()
 
     def stop(self):
         self._stop.set()
+        try:
+            self.metrics.save()
+        except Exception:
+            pass
 
     def _update_day_rollover(self, t: Target):
         today = datetime.now().strftime("%Y%m%d")
@@ -675,10 +703,11 @@ class Gobbler(threading.Thread):
                     if after is not None:
                         total_rss += after
 
+                event_ts = time.time()
                 with self._lock:
                     try:
                         real_t = self.config.targets[idx]
-                        real_t.last_trim_ts = time.time()
+                        real_t.last_trim_ts = event_ts
                         real_t.last_delta_mb = total_delta
                         real_t.last_result = f"Trimmed {trimmed} procs, -{total_delta:.1f} MB"
                         real_t.last_trim_reason = trim_reason
@@ -689,6 +718,9 @@ class Gobbler(threading.Thread):
                         if total_delta > 0:
                             real_t.history.append(total_delta)
                             real_t.history = real_t.history[-40:]
+                        real_t._events.append(
+                            {"ts": event_ts, "delta_mb": total_delta, "reason": trim_reason, "ok": trimmed > 0}
+                        )
                         # Adaptive interval
                         if real_t.adaptive:
                             growth = max(0.0, total_rss - real_t.last_total_rss_mb)
@@ -703,9 +735,16 @@ class Gobbler(threading.Thread):
                 if helper_needed and not self.helper_warned:
                     msg += " (helper not running)"
                     self.helper_warned = True
+                self.metrics.add_event(event_ts, total_delta, trim_reason, t.strategy)
                 self.on_result(idx, msg)
                 if total_delta > 0:
                     self.on_delta(total_delta)
+            if time.time() - self._last_flush > 10:
+                try:
+                    self.metrics.save()
+                except Exception:
+                    pass
+                self._last_flush = time.time()
             time.sleep(1)
 
     # mutation helpers
@@ -832,6 +871,90 @@ class Sparkline(QWidget):
         for i in range(1, len(pts)):
             qp.drawLine(pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1])
 
+# --- Groups sidebar ---------------------------------------------------------
+class GroupsSidebar(QWidget):
+    def __init__(self, config: Config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        layout = QVBoxLayout(self)
+        self.list = QListWidget()
+        self.list.currentRowChanged.connect(self._emit_selection)
+        layout.addWidget(self.list)
+        btn_row = QHBoxLayout()
+        self.btn_add = QPushButton("Add")
+        self.btn_rename = QPushButton("Rename")
+        self.btn_delete = QPushButton("Delete")
+        self.btn_start = QPushButton("Start")
+        self.btn_stop = QPushButton("Stop")
+        for b in (self.btn_add, self.btn_rename, self.btn_delete, self.btn_start, self.btn_stop):
+            btn_row.addWidget(b)
+        layout.addLayout(btn_row)
+        self.btn_add.clicked.connect(self._add)
+        self.btn_rename.clicked.connect(self._rename)
+        self.btn_delete.clicked.connect(self._delete)
+        self.btn_start.clicked.connect(lambda: parent._gobble_all())
+        self.btn_stop.clicked.connect(lambda: parent._stop_all())
+        self.refresh()
+
+    def refresh(self):
+        self.list.clear()
+        self.list.addItem("All")
+        for g in self.config.groups:
+            self.list.addItem(g.name)
+        self.list.setCurrentRow(0)
+
+    def current_group_id(self) -> str:
+        row = self.list.currentRow()
+        if row <= 0:
+            return ""
+        try:
+            return self.config.groups[row - 1].id
+        except IndexError:
+            return ""
+
+    def _emit_selection(self, _):
+        gid = self.current_group_id()
+        if hasattr(self.parent(), "_on_group_selected"):
+            self.parent()._on_group_selected(gid)
+
+    def _add(self):
+        name, ok = QInputDialog.getText(self, "Add Group", "Group name:")
+        if not ok or not name:
+            return
+        gid = uuid.uuid4().hex[:8]
+        self.config.groups.append(Group(id=gid, name=name))
+        self.config.save()
+        self.refresh()
+        if hasattr(self.parent(), "targets_table"):
+            self.parent().targets_table.refresh()
+
+    def _rename(self):
+        row = self.list.currentRow()
+        if row <= 0:
+            return
+        grp = self.config.groups[row - 1]
+        name, ok = QInputDialog.getText(self, "Rename Group", "Group name:", text=grp.name)
+        if not ok or not name:
+            return
+        grp.name = name
+        self.config.save()
+        self.refresh()
+        if hasattr(self.parent(), "targets_table"):
+            self.parent().targets_table.refresh()
+
+    def _delete(self):
+        row = self.list.currentRow()
+        if row <= 0:
+            return
+        grp = self.config.groups.pop(row - 1)
+        for t in self.config.targets:
+            if t.group_id == grp.id:
+                t.group_id = ""
+        self.config.save()
+        self.refresh()
+        if hasattr(self.parent(), "targets_table"):
+            self.parent().targets_table.refresh()
+
 # --- Target rules dialog ----------------------------------------------------
 class RulesDialog(QDialog):
     def __init__(self, t: Target, parent=None):
@@ -878,7 +1001,7 @@ class RulesDialog(QDialog):
 # --- Targets table ----------------------------------------------------------
 class TargetsTable(QTableWidget):
     HEADERS = [
-        "Target", "Match", "Auto-start", "Status",
+        "Group", "Target", "Match", "Auto-start", "Status",
         "Last Δ (MB)", "Totals MB (Sess/Day)", "History", "Interval (s)", "Actions"
     ]
 
@@ -886,6 +1009,8 @@ class TargetsTable(QTableWidget):
         super().__init__(0, len(self.HEADERS))
         self.config = config
         self.gobbler = gobbler
+        self.group_filter = ""
+        self.index_to_row: Dict[int, int] = {}
         self.setHorizontalHeaderLabels(self.HEADERS)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.verticalHeader().setVisible(False)
@@ -894,15 +1019,62 @@ class TargetsTable(QTableWidget):
         self.setAlternatingRowColors(True)
         self.refresh()
 
+    def set_group_filter(self, gid: str):
+        self.group_filter = gid
+        self.refresh()
+
+    def _group_name(self, gid: str) -> str:
+        if not gid:
+            return "Ungrouped"
+        for g in self.config.groups:
+            if g.id == gid:
+                return g.name
+        return gid
+
     def refresh(self):
         self.setRowCount(0)
-        for idx, t in enumerate(self.config.targets):
-            self._add_row(idx, t)
+        self.index_to_row = {}
+        if self.group_filter:
+            for idx, t in enumerate(self.config.targets):
+                if t.group_id == self.group_filter:
+                    self._add_row(idx, t)
+        else:
+            groups: Dict[str, List[Tuple[int, Target]]] = {}
+            for idx, t in enumerate(self.config.targets):
+                groups.setdefault(t.group_id or "", []).append((idx, t))
+            order = [""] + [g.id for g in self.config.groups if g.id]
+            for gid in order:
+                members = groups.get(gid, [])
+                if not members:
+                    continue
+                total = sum(t.session_reclaimed_mb for _, t in members)
+                histories = [t.history for _, t in members]
+                agg_hist = [sum(vals) for vals in zip_longest(*histories, fillvalue=0.0)]
+                self._add_group_header(self._group_name(gid), total, agg_hist)
+                for idx, t in members:
+                    self._add_row(idx, t)
+
+    def _add_group_header(self, name: str, total: float, history: List[float]):
+        row = self.rowCount()
+        self.insertRow(row)
+        item = QTableWidgetItem(name)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setFlags(Qt.ItemIsEnabled)
+        self.setItem(row, 0, item)
+        total_item = QTableWidgetItem(f"{total:.1f}")
+        total_item.setFlags(Qt.ItemIsEnabled)
+        self.setItem(row, 6, total_item)
+        spark = Sparkline(history)
+        self.setCellWidget(row, 7, spark)
 
     def _add_row(self, idx: int, t: Target):
         row = self.rowCount()
         self.insertRow(row)
+        self.index_to_row[idx] = row
 
+        group_item = QTableWidgetItem(self._group_name(t.group_id))
         target_item = QTableWidgetItem(t.key)
         match_item = QTableWidgetItem(t.match_by)
         status_text = ("Gobbling" if t.active else "Idle")
@@ -925,7 +1097,6 @@ class TargetsTable(QTableWidget):
         interval_widget.setToolTip("How often to trim memory for this target")
         interval_widget.valueChanged.connect(lambda val, i=idx: self._on_interval(i, val))
 
-        # Actions cell
         actions_widget = QWidget()
         h = QHBoxLayout(actions_widget)
         h.setContentsMargins(0, 0, 0, 0)
@@ -944,15 +1115,16 @@ class TargetsTable(QTableWidget):
         h.addWidget(btn_edit)
         h.addWidget(btn_remove)
 
-        self.setItem(row, 0, target_item)
-        self.setItem(row, 1, match_item)
-        self.setCellWidget(row, 2, autostart_cb)
-        self.setItem(row, 3, status_item)
-        self.setItem(row, 4, last_delta_item)
-        self.setItem(row, 5, totals_item)
-        self.setCellWidget(row, 6, spark)
-        self.setCellWidget(row, 7, interval_widget)
-        self.setCellWidget(row, 8, actions_widget)
+        self.setItem(row, 0, group_item)
+        self.setItem(row, 1, target_item)
+        self.setItem(row, 2, match_item)
+        self.setCellWidget(row, 3, autostart_cb)
+        self.setItem(row, 4, status_item)
+        self.setItem(row, 5, last_delta_item)
+        self.setItem(row, 6, totals_item)
+        self.setCellWidget(row, 7, spark)
+        self.setCellWidget(row, 8, interval_widget)
+        self.setCellWidget(row, 9, actions_widget)
 
     def _on_start(self, index: int):
         self.gobbler.set_active(index, True)
@@ -982,20 +1154,23 @@ class TargetsTable(QTableWidget):
         self.gobbler.set_autostart(index, value)
 
     def update_status(self, index: int, message: str):
-        if 0 <= index < len(self.config.targets):
-            row = index
-            status_item = self.item(row, 3)
-            if status_item:
-                t = self.config.targets[index]
-                state = "Gobbling" if t.active else "Idle"
-                status_item.setText(f"{state} — {message}")
-            self.item(row, 4).setText(f"{self.config.targets[index].last_delta_mb:.1f}")
-            self.item(row, 5).setText(
+        row = self.index_to_row.get(index)
+        if row is None:
+            return
+        status_item = self.item(row, 4)
+        if status_item:
+            t = self.config.targets[index]
+            state = "Gobbling" if t.active else "Idle"
+            status_item.setText(f"{state} — {message}")
+        if self.item(row, 5):
+            self.item(row, 5).setText(f"{self.config.targets[index].last_delta_mb:.1f}")
+        if self.item(row, 6):
+            self.item(row, 6).setText(
                 f"{self.config.targets[index].session_reclaimed_mb:.1f} / {self.config.targets[index].day_reclaimed_mb:.1f}"
             )
-            spark: Sparkline = self.cellWidget(row, 6)
-            if spark:
-                spark.set_values(self.config.targets[index].history)
+        spark: Sparkline = self.cellWidget(row, 7)
+        if spark:
+            spark.set_values(self.config.targets[index].history)
 
 # --- Add Target Dialog ------------------------------------------------------
 class AddTargetDialog(QDialog):
@@ -1159,6 +1334,127 @@ class WinEventFilter(QAbstractNativeEventFilter):
                 self.on_resume()
         return False, 0
 
+# --- Dashboard widgets ------------------------------------------------------
+class ChartWidget(QWidget):
+    def __init__(self, values: List[float], parent=None):
+        super().__init__(parent)
+        self.values = values
+        self.setMinimumHeight(80)
+
+    def set_values(self, values: List[float]):
+        self.values = values
+        self.update()
+
+    def paintEvent(self, event):
+        qp = QPainter(self)
+        rect = self.rect().adjusted(2, 2, -2, -2)
+        vals = self.values or [0]
+        vmax = max(vals) or 1.0
+        bar_w = rect.width() / max(len(vals), 1)
+        for i, v in enumerate(vals):
+            x = rect.left() + int(i * bar_w)
+            h = int((v / vmax) * rect.height())
+            qp.fillRect(x, rect.bottom() - h, int(bar_w * 0.8), h, Qt.darkCyan)
+
+
+class Dashboard(QWidget):
+    def __init__(self, config: Config, metrics: Metrics, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.metrics = metrics
+        layout = QVBoxLayout(self)
+
+        card_row = QHBoxLayout()
+        self.lbl_session = QLabel("0.0")
+        self.lbl_day = QLabel("0.0")
+        self.lbl_week = QLabel("0.0")
+        self.lbl_month = QLabel("0.0")
+        for label, widget in [
+            ("Session", self.lbl_session),
+            ("Day", self.lbl_day),
+            ("7-day", self.lbl_week),
+            ("30-day", self.lbl_month),
+        ]:
+            box = QGroupBox(label)
+            vb = QVBoxLayout(box)
+            vb.addWidget(widget)
+            card_row.addWidget(box)
+        layout.addLayout(card_row)
+
+        self.top_table = QTableWidget(0, 2)
+        self.top_table.setHorizontalHeaderLabels(["Top Saver", "MB"])
+        self.top_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.top_table)
+
+        self.eff_table = QTableWidget(0, 2)
+        self.eff_table.setHorizontalHeaderLabels(["Strategy", "Avg MB/Trim"])
+        self.eff_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.eff_table)
+
+        self.chart = ChartWidget([])
+        layout.addWidget(self.chart)
+
+        btn_row = QHBoxLayout()
+        self.btn_day_json = QPushButton("Export Day JSON")
+        self.btn_day_csv = QPushButton("Export Day CSV")
+        self.btn_month_json = QPushButton("Export 30-day JSON")
+        self.btn_month_csv = QPushButton("Export 30-day CSV")
+        for b in (self.btn_day_json, self.btn_day_csv, self.btn_month_json, self.btn_month_csv):
+            btn_row.addWidget(b)
+        layout.addLayout(btn_row)
+        self.btn_day_json.clicked.connect(lambda: self._export(1, "json"))
+        self.btn_day_csv.clicked.connect(lambda: self._export(1, "csv"))
+        self.btn_month_json.clicked.connect(lambda: self._export(30, "json"))
+        self.btn_month_csv.clicked.connect(lambda: self._export(30, "csv"))
+
+    def _export(self, days: int, fmt: str):
+        data = self.metrics.export_json(days) if fmt == "json" else self.metrics.export_csv(days)
+        filt = "JSON Files (*.json)" if fmt == "json" else "CSV Files (*.csv)"
+        path, _ = QFileDialog.getSaveFileName(self, "Export Metrics", "", filt)
+        if not path:
+            return
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(data)
+
+    def refresh(self, session_total: float):
+        day = self.metrics._aggregate(1)
+        week = self.metrics._aggregate(7)
+        month = self.metrics._aggregate(30)
+        self.lbl_session.setText(f"{session_total:.1f} MB")
+        self.lbl_day.setText(f"{day['reclaimed_mb']:.1f} MB")
+        self.lbl_week.setText(f"{week['reclaimed_mb']:.1f} MB")
+        self.lbl_month.setText(f"{month['reclaimed_mb']:.1f} MB")
+
+        self.top_table.setRowCount(0)
+        top_targets = sorted(self.config.targets, key=lambda t: t.session_reclaimed_mb, reverse=True)[:5]
+        groups = group_totals(self.config.targets)
+        top_groups = sorted(groups.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        for t in top_targets:
+            r = self.top_table.rowCount(); self.top_table.insertRow(r)
+            self.top_table.setItem(r, 0, QTableWidgetItem(f"Target: {t.key}"))
+            self.top_table.setItem(r, 1, QTableWidgetItem(f"{t.session_reclaimed_mb:.1f}"))
+        for gid, val in top_groups:
+            name = next((g.name for g in self.config.groups if g.id == gid), "Ungrouped" if not gid else gid)
+            r = self.top_table.rowCount(); self.top_table.insertRow(r)
+            self.top_table.setItem(r, 0, QTableWidgetItem(f"Group: {name}"))
+            self.top_table.setItem(r, 1, QTableWidgetItem(f"{val:.1f}"))
+
+        self.eff_table.setRowCount(0)
+        agg = self.metrics._aggregate(30)
+        for strat, mb in agg.get("by_strategy", {}).items():
+            trims = agg.get("by_strategy_trims", {}).get(strat, 0)
+            avg = mb / trims if trims else 0.0
+            r = self.eff_table.rowCount(); self.eff_table.insertRow(r)
+            self.eff_table.setItem(r, 0, QTableWidgetItem(strat))
+            self.eff_table.setItem(r, 1, QTableWidgetItem(f"{avg:.1f}"))
+
+        today = datetime.now().date()
+        vals = []
+        for i in range(30):
+            d = today - timedelta(days=29 - i)
+            vals.append(self.metrics.rollups.get(d.strftime("%Y-%m-%d"), {}).get("reclaimed_mb", 0.0))
+        self.chart.set_values(vals)
+
 # --- Main Window ------------------------------------------------------------
 class MainWindow(QMainWindow):
     def __init__(self, config: Config):
@@ -1169,9 +1465,12 @@ class MainWindow(QMainWindow):
 
         self.config = config
         self.session_reclaimed_total = 0.0
-        self.gobbler = Gobbler(self.config, self._on_trim_result, self._on_delta)
+        self.metrics = Metrics(METRICS_PATH)
+        self.metrics.load()
+        self.gobbler = Gobbler(self.config, self.metrics, self._on_trim_result, self._on_delta)
         self.gobbler.start()
         self._hotkey_registered = False
+        self.current_group = ""
 
         # Toolbar
         tb = QToolBar()
@@ -1184,17 +1483,21 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        act_gobble_all = QAction("Gobble All Targets", self)
-        act_gobble_all.triggered.connect(self._gobble_all)
-        tb.addAction(act_gobble_all)
+        self.act_gobble_all = QAction("Gobble All Targets", self)
+        self.act_gobble_all.triggered.connect(self._gobble_all)
+        tb.addAction(self.act_gobble_all)
 
-        act_stop_all = QAction("Stop All", self)
-        act_stop_all.triggered.connect(self._stop_all)
-        tb.addAction(act_stop_all)
+        self.act_stop_all = QAction("Stop All", self)
+        self.act_stop_all.triggered.connect(self._stop_all)
+        tb.addAction(self.act_stop_all)
 
         self.act_trim_visible = QAction("Trim Visible Targets Now", self)
         self.act_trim_visible.triggered.connect(self._trim_visible_targets)
         tb.addAction(self.act_trim_visible)
+
+        self.act_view = QAction("Dashboard", self)
+        self.act_view.triggered.connect(self._toggle_view)
+        tb.addAction(self.act_view)
 
         # Profiles
         m_profiles = QMenu("Profiles", self)
@@ -1238,7 +1541,7 @@ class MainWindow(QMainWindow):
         left = QWidget(); right = QWidget()
         splitter.addWidget(left); splitter.addWidget(right)
         splitter.setSizes([650, 560])
-        self.setCentralWidget(splitter)
+        self.splitter = splitter
 
         # Left: Running processes
         lv = QVBoxLayout(left)
@@ -1260,13 +1563,21 @@ class MainWindow(QMainWindow):
         bl.addWidget(self.table)
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
 
-        # Right: Targets
+        # Right: Targets with groups sidebar
         rv = QVBoxLayout(right)
         box_right = QGroupBox("Targets")
         rv.addWidget(box_right)
-        br = QVBoxLayout(box_right)
+        br = QHBoxLayout(box_right)
+        self.groups_sidebar = GroupsSidebar(self.config, self)
+        br.addWidget(self.groups_sidebar)
         self.targets_table = TargetsTable(self.config, self.gobbler)
-        br.addWidget(self.targets_table)
+        br.addWidget(self.targets_table, 1)
+
+        self.dashboard = Dashboard(self.config, self.metrics)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.splitter)
+        self.stack.addWidget(self.dashboard)
+        self.setCentralWidget(self.stack)
 
         # Status bar: global reclaimed total
         self.lbl_total = QLabel("Session reclaimed: 0.0 MB"); self.statusBar().addPermanentWidget(self.lbl_total)
@@ -1291,6 +1602,8 @@ class MainWindow(QMainWindow):
         # Apply hotkey from config
         QTimer.singleShot(0, lambda: self._apply_hotkey(self.config.hotkey))
 
+        self._update_toolbar_scope()
+
     # --- Theme & styles ---
     def _toggle_theme(self, on: bool):
         self.config.theme = "light" if on else "dark"; self.config.save(); self._apply_styles(self.config.theme)
@@ -1307,6 +1620,39 @@ class MainWindow(QMainWindow):
 
     def _toggle_show_system(self, _):
         self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save(); self.proc_model.set_include_system(self.config.show_system)
+
+    def _on_group_selected(self, gid: str):
+        self.current_group = gid
+        self.targets_table.set_group_filter(gid)
+        self._update_toolbar_scope()
+
+    def _group_name(self, gid: str) -> str:
+        if not gid:
+            return "Ungrouped"
+        for g in self.config.groups:
+            if g.id == gid:
+                return g.name
+        return gid
+
+    def _update_toolbar_scope(self):
+        if self.current_group:
+            name = self._group_name(self.current_group)
+            self.act_gobble_all.setText(f"Gobble Group {name}")
+            self.act_stop_all.setText(f"Stop Group {name}")
+            self.act_trim_visible.setText(f"Trim {name} Targets Now")
+        else:
+            self.act_gobble_all.setText("Gobble All Targets")
+            self.act_stop_all.setText("Stop All")
+            self.act_trim_visible.setText("Trim Visible Targets Now")
+
+    def _toggle_view(self):
+        if self.stack.currentWidget() == self.dashboard:
+            self.stack.setCurrentWidget(self.splitter)
+            self.act_view.setText("Dashboard")
+        else:
+            self.dashboard.refresh(self.session_reclaimed_total)
+            self.stack.setCurrentWidget(self.dashboard)
+            self.act_view.setText("Targets")
 
     def _apply_styles(self, theme: str):
         if theme == "light":
@@ -1368,17 +1714,27 @@ class MainWindow(QMainWindow):
     # --- Periodic refresh ---
     def _refresh_periodic(self):
         self.proc_model.refresh(); self.targets_table.refresh()
+        if self.stack.currentWidget() == self.dashboard:
+            self.dashboard.refresh(self.session_reclaimed_total)
 
     def _refresh_processes(self):
         self.proc_model.refresh()
 
     def _gobble_all(self):
-        for i in range(len(self.config.targets)): self.gobbler.set_active(i, True)
-        self.targets_table.refresh(); self.statusBar().showMessage("Gobbling started for all targets", 3000)
+        for i, t in enumerate(self.config.targets):
+            if not self.current_group or t.group_id == self.current_group:
+                self.gobbler.set_active(i, True)
+        self.targets_table.refresh()
+        scope = self._group_name(self.current_group) if self.current_group else "all targets"
+        self.statusBar().showMessage(f"Gobbling started for {scope}", 3000)
 
     def _stop_all(self):
-        for i in range(len(self.config.targets)): self.gobbler.set_active(i, False)
-        self.targets_table.refresh(); self.statusBar().showMessage("Gobbling stopped for all targets", 3000)
+        for i, t in enumerate(self.config.targets):
+            if not self.current_group or t.group_id == self.current_group:
+                self.gobbler.set_active(i, False)
+        self.targets_table.refresh()
+        scope = self._group_name(self.current_group) if self.current_group else "all targets"
+        self.statusBar().showMessage(f"Gobbling stopped for {scope}", 3000)
 
     def _apply_profile(self, interval_sec: int):
         for i in range(len(self.config.targets)): self.gobbler.set_interval(i, interval_sec)
@@ -1439,20 +1795,43 @@ class MainWindow(QMainWindow):
     def _trim_visible_targets(self):
         total_pids = 0; trimmed_ok = 0; total_delta = 0.0
         for t in self.config.targets:
+            if self.current_group and t.group_id != self.current_group:
+                continue
             pids = match_pids(t); total_pids += len(pids)
+            delta_t = 0.0
             if pids:
                 t.last_trim_reason = "manual"
                 t.last_skip_reason = ""
             for pid in pids:
                 try:
-                    if self.config.protect_system and is_system_process(psutil.Process(pid)): continue
-                except Exception: continue
+                    if self.config.protect_system and is_system_process(psutil.Process(pid)):
+                        continue
+                except Exception:
+                    continue
                 before = rss_mb(pid); ok = empty_working_set(pid); after = rss_mb(pid)
-                if ok: trimmed_ok += 1
-                if before is not None and after is not None: total_delta += max(0.0, before - after)
-        self.session_reclaimed_total += total_delta; self._update_total_label()
-        msg = f"Trimmed {trimmed_ok}/{total_pids} processes (−{total_delta:.1f} MB) for visible targets"; self.statusBar().showMessage(msg, 4000)
-        if self.tray: self.tray.showMessage(APP_NAME, msg)
+                if ok:
+                    trimmed_ok += 1
+                if before is not None and after is not None:
+                    d = max(0.0, before - after)
+                    total_delta += d
+                    delta_t += d
+            if delta_t > 0:
+                t.session_reclaimed_mb += delta_t
+                t.day_reclaimed_mb += delta_t
+                t.last_delta_mb = delta_t
+                t.history.append(delta_t)
+                t.history = t.history[-40:]
+                ts = time.time()
+                t._events.append({"ts": ts, "delta_mb": delta_t, "reason": "manual", "ok": True})
+                self.metrics.add_event(ts, delta_t, "manual", t.strategy)
+        self.session_reclaimed_total += total_delta
+        self._update_total_label()
+        scope = self._group_name(self.current_group) if self.current_group else "visible targets"
+        msg = f"Trimmed {trimmed_ok}/{total_pids} processes (−{total_delta:.1f} MB) for {scope}"; self.statusBar().showMessage(msg, 4000)
+        if self.tray:
+            self.tray.showMessage(APP_NAME, msg)
+        if self.stack.currentWidget() == self.dashboard:
+            self.dashboard.refresh(self.session_reclaimed_total)
 
     def _update_total_label(self):
         self.lbl_total.setText(f"Session reclaimed: {self.session_reclaimed_total:.1f} MB")
@@ -1489,7 +1868,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, update)
 
     def _on_delta(self, delta_mb: float):
-        if delta_mb > 0: self.session_reclaimed_total += delta_mb; self._update_total_label()
+        if delta_mb > 0:
+            self.session_reclaimed_total += delta_mb
+            self._update_total_label()
+            if self.stack.currentWidget() == self.dashboard:
+                self.dashboard.refresh(self.session_reclaimed_total)
 
     def _autostart_targets(self):
         for i, t in enumerate(self.config.targets):
@@ -1502,6 +1885,8 @@ class MainWindow(QMainWindow):
             if self.tray: self.tray.showMessage(APP_NAME, "Still running in the system tray."); return
         self._unregister_hotkey()
         try: self.gobbler.stop()
+        except Exception: pass
+        try: self.metrics.save()
         except Exception: pass
         return super().closeEvent(event)
 
