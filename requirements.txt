@@ -1,2 +1,3 @@
 PySide6
 psutil
+pywin32; platform_system == "Windows"
