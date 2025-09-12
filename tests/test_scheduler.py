@@ -25,6 +25,38 @@ def test_user_idle_seconds_non_negative():
     assert isinstance(idle, int) and idle >= 0
 
 
+def test_user_idle_seconds_wraparound(monkeypatch):
+    import types, scheduler
+
+    # Pretend we're on Windows to exercise wrap-around logic
+    monkeypatch.setattr(scheduler.os, "name", "nt")
+
+    import ctypes
+
+    def fake_GetLastInputInfo(ptr):
+        class LI(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        p = ctypes.cast(ptr, ctypes.POINTER(LI))
+        p.contents.dwTime = 0xFFFFFF00  # just before wrap
+        return True
+
+    def fake_GetTickCount():
+        return 0x00000100  # after wrap
+
+    monkeypatch.setattr(
+        scheduler.ctypes,
+        "windll",
+        types.SimpleNamespace(
+            user32=types.SimpleNamespace(GetLastInputInfo=fake_GetLastInputInfo),
+            kernel32=types.SimpleNamespace(GetTickCount=fake_GetTickCount),
+        ),
+        raising=False,
+    )
+
+    assert user_idle_seconds() >= 0
+
+
 def test_metered_gate():
     @dataclass
     class Cfg:
