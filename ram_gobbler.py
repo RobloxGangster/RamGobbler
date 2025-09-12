@@ -54,6 +54,7 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from matching import matches
+from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
 
 # --- Platform check ---------------------------------------------------------
 if os.name != "nt":
@@ -352,6 +353,10 @@ class Target:
     pause_if_fullscreen: bool = True  # skip when a fullscreen window is active
     strategy: str = "standard"   # 'standard' or 'reset'
     last_total_rss_mb: float = 0.0
+    # scheduling / gating
+    schedule: Optional[dict] = None  # {days:[0..6], start:"HH:MM", end:"HH:MM", idle_only: bool}
+    last_skip_reason: str = ""
+    last_trim_reason: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -379,6 +384,9 @@ class Target:
             pause_if_fullscreen=bool(d.get("pause_if_fullscreen", True)),
             strategy=d.get("strategy", "standard"),
             last_total_rss_mb=float(d.get("last_total_rss_mb", 0.0)),
+            schedule=d.get("schedule"),
+            last_skip_reason=d.get("last_skip_reason", ""),
+            last_trim_reason=d.get("last_trim_reason", ""),
         )
 
 # --- Config -----------------------------------------------------------------
@@ -399,6 +407,12 @@ class Config:
         self.gaming_mode: bool = True    # pause trims while fullscreen
         self.battery_mode: str = "slow"  # off | slow | pause
         self.battery_slow_factor: float = 2.0
+        # scheduling / gating
+        self.maintenance_window: dict = {"start": "00:00", "end": "00:00", "aggressive": False}
+        self.idle_seconds: int = 0
+        self.jitter_pct: int = 10
+        self.metered: bool = False
+        self.version: int = 4
 
     def load(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -422,6 +436,13 @@ class Config:
             self.gaming_mode = bool(raw.get("gaming_mode", True))
             self.battery_mode = raw.get("battery_mode", "slow")
             self.battery_slow_factor = float(raw.get("battery_slow_factor", 2.0))
+            self.maintenance_window = raw.get("maintenance_window", self.maintenance_window)
+            self.idle_seconds = int(raw.get("idle_seconds", 0))
+            self.jitter_pct = int(raw.get("jitter_pct", 10))
+            self.metered = bool(raw.get("metered", False))
+            self.version = int(raw.get("version", 1))
+            if self.version < 4:
+                self.version = 4
         except Exception:
             self.targets = []
 
@@ -448,6 +469,11 @@ class Config:
             "gaming_mode": self.gaming_mode,
             "battery_mode": self.battery_mode,
             "battery_slow_factor": self.battery_slow_factor,
+            "maintenance_window": self.maintenance_window,
+            "idle_seconds": self.idle_seconds,
+            "jitter_pct": self.jitter_pct,
+            "metered": self.metered,
+            "version": self.version,
         }
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
@@ -508,32 +534,33 @@ class Gobbler(threading.Thread):
             t.day_key = today
             t.day_reclaimed_mb = 0.0
 
-    def _allow_trimming_now(self) -> bool:
+    def _allow_trimming_now(self) -> Tuple[bool, str]:
         # pressure
         if self.config.pressure_enabled:
             try:
                 vm = psutil.virtual_memory()
                 avail_pct = 100.0 * vm.available / max(1, vm.total)
                 if avail_pct > self.config.min_free_percent:
-                    return False
+                    return False, "Pressure off"
             except Exception:
                 pass
         # gaming / fullscreen
         if self.config.gaming_mode and is_fullscreen_active():
-            return False
+            return False, "Paused (Fullscreen)"
         # battery
         if self.config.battery_mode in ("pause", "slow"):
             onbatt, low = on_battery()
             if self.config.battery_mode == "pause" and onbatt:
-                return False
-        return True
+                return False, "Paused (Battery)"
+        return True, ""
 
     def run(self):
         while not self._stop.is_set():
-            now = time.time()
+            now_ts = time.time()
+            now_dt = datetime.now()
             with self._lock:
                 targets_snapshot = list(self.config.targets)
-            global_ok = self._allow_trimming_now()
+            global_ok, global_reason = self._allow_trimming_now()
             batt_on, _ = on_battery()
             batt_factor = self.config.battery_slow_factor if (self.config.battery_mode == "slow" and batt_on) else 1.0
             fg_pid = get_foreground_pid()
@@ -541,13 +568,50 @@ class Gobbler(threading.Thread):
             for idx, t in enumerate(targets_snapshot):
                 if not t.active:
                     continue
-                eff_interval = max(3, int(t.interval_sec * batt_factor))
-                if now - t.last_trim_ts < eff_interval:
+                base_interval = jittered_interval(t.interval_sec, t.key, self.config.jitter_pct)
+                eff_interval = max(3, int(base_interval * batt_factor))
+                in_maint = window_active(self.config.maintenance_window, now_dt)
+                trim_reason = "maintenance" if in_maint else "timer"
+                if in_maint and self.config.maintenance_window.get("aggressive"):
+                    eff_interval = min(eff_interval, 8)
+                if now_ts - t.last_trim_ts < eff_interval:
                     continue
-                # Global pause
                 if not global_ok:
+                    self.on_result(idx, global_reason)
+                    with self._lock:
+                        try:
+                            self.config.targets[idx].last_skip_reason = global_reason
+                        except IndexError:
+                            pass
                     continue
-                # Per-target pause rules
+                if not schedule_allows_now(t.schedule, now_dt):
+                    reason = "Blocked (Schedule)"
+                    self.on_result(idx, reason)
+                    with self._lock:
+                        try:
+                            self.config.targets[idx].last_skip_reason = reason
+                        except IndexError:
+                            pass
+                    continue
+                if self.config.idle_seconds > 0 and t.schedule and t.schedule.get("idle_only"):
+                    if user_idle_seconds() < self.config.idle_seconds:
+                        reason = "Idle unmet"
+                        self.on_result(idx, reason)
+                        with self._lock:
+                            try:
+                                self.config.targets[idx].last_skip_reason = reason
+                            except IndexError:
+                                pass
+                        continue
+                if self.config.metered:
+                    reason = "Metered"
+                    self.on_result(idx, reason)
+                    with self._lock:
+                        try:
+                            self.config.targets[idx].last_skip_reason = reason
+                        except IndexError:
+                            pass
+                    continue
                 if t.background_only and fg_pid is not None:
                     try:
                         if fg_pid in match_pids(t):
@@ -555,6 +619,13 @@ class Gobbler(threading.Thread):
                     except Exception:
                         pass
                 if t.pause_if_fullscreen and is_fullscreen_active():
+                    reason = "Paused (Fullscreen)"
+                    self.on_result(idx, reason)
+                    with self._lock:
+                        try:
+                            self.config.targets[idx].last_skip_reason = reason
+                        except IndexError:
+                            pass
                     continue
 
                 pids = match_pids(t)
@@ -610,6 +681,8 @@ class Gobbler(threading.Thread):
                         real_t.last_trim_ts = time.time()
                         real_t.last_delta_mb = total_delta
                         real_t.last_result = f"Trimmed {trimmed} procs, -{total_delta:.1f} MB"
+                        real_t.last_trim_reason = trim_reason
+                        real_t.last_skip_reason = ""
                         self._update_day_rollover(real_t)
                         real_t.session_reclaimed_mb += total_delta
                         real_t.day_reclaimed_mb += total_delta
@@ -1367,6 +1440,9 @@ class MainWindow(QMainWindow):
         total_pids = 0; trimmed_ok = 0; total_delta = 0.0
         for t in self.config.targets:
             pids = match_pids(t); total_pids += len(pids)
+            if pids:
+                t.last_trim_reason = "manual"
+                t.last_skip_reason = ""
             for pid in pids:
                 try:
                     if self.config.protect_system and is_system_process(psutil.Process(pid)): continue
