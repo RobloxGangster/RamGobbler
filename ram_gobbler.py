@@ -51,6 +51,8 @@ import time
 import threading
 import shutil
 import uuid
+import argparse
+import statistics
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from collections import deque
@@ -61,31 +63,39 @@ from metrics import Metrics
 from matching import matches
 from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
 
-# --- Platform check ---------------------------------------------------------
-if os.name != "nt":
-    from PySide6.QtWidgets import QApplication, QMessageBox
-    app = QApplication(sys.argv)
-    QMessageBox.critical(None, "Unsupported OS", "This app only runs on Windows.")
-    sys.exit(1)
-
-# Win32 imports
-import ctypes
-from ctypes import wintypes
-import winreg
-
-# Third-party
-import psutil
-from PySide6.QtCore import (Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
-                            QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent)
-from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QLineEdit, QTableView, QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox,
-    QFileDialog, QMessageBox, QAbstractItemView, QSplitter, QStyle,
-    QTableWidget, QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout,
-    QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox,
-    QListWidget, QInputDialog, QStackedWidget
-)
+# --- Platform check & imports ----------------------------------------------
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+    import winreg
+    import psutil
+    from PySide6.QtCore import (
+        Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
+        QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent
+    )
+    from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+        QLineEdit, QTableView, QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox,
+        QFileDialog, QMessageBox, QAbstractItemView, QSplitter, QStyle,
+        QTableWidget, QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout,
+        QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox,
+        QListWidget, QInputDialog, QStackedWidget,
+    )
+else:
+    import psutil
+    import types
+    _dummy_class = type("_Dummy", (), {})
+    Qt = types.SimpleNamespace(DisplayRole=0)
+    QAbstractTableModel = QModelIndex = QSortFilterProxyModel = QTimer = QSize = QAbstractNativeEventFilter = QRect = QEvent = _dummy_class
+    QIcon = QAction = QKeySequence = QPainter = QPen = _dummy_class
+    QApplication = QMainWindow = QWidget = QVBoxLayout = QHBoxLayout = QGroupBox = QLineEdit = QTableView = QPushButton = QLabel = QHeaderView = QToolBar = QSpinBox = QFileDialog = QMessageBox = QAbstractItemView = QSplitter = QStyle = QTableWidget = QTableWidgetItem = QCheckBox = QMenu = QDialog = QFormLayout = QDialogButtonBox = QSystemTrayIcon = QKeySequenceEdit = QComboBox = QListWidget = QInputDialog = QStackedWidget = _dummy_class
+    ctypes = types.SimpleNamespace(Structure=object, c_size_t=int)
+    wintypes = types.SimpleNamespace(
+        DWORD=int, BOOL=int, HANDLE=int, HWND=int, INT=int, UINT=int, LONG=int,
+        LPARAM=int, WPARAM=int
+    )
+    winreg = types.SimpleNamespace()
 
 APP_NAME = "Ram Gobbler"
 CONFIG_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "RamGobbler")
@@ -95,46 +105,57 @@ METRICS_PATH = os.path.join(CONFIG_DIR, "metrics.json")
 DEFAULT_INTERVAL = 15  # seconds
 
 # --- Win32: APIs ------------------------------------------------------------
-OpenProcess = ctypes.windll.kernel32.OpenProcess
-OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-OpenProcess.restype = wintypes.HANDLE
+if os.name == "nt":
+    OpenProcess = ctypes.windll.kernel32.OpenProcess
+    OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    OpenProcess.restype = wintypes.HANDLE
 
-CloseHandle = ctypes.windll.kernel32.CloseHandle
-CloseHandle.argtypes = [wintypes.HANDLE]
-CloseHandle.restype = wintypes.BOOL
+    CloseHandle = ctypes.windll.kernel32.CloseHandle
+    CloseHandle.argtypes = [wintypes.HANDLE]
+    CloseHandle.restype = wintypes.BOOL
 
-EmptyWorkingSet = ctypes.windll.psapi.EmptyWorkingSet
-EmptyWorkingSet.argtypes = [wintypes.HANDLE]
-EmptyWorkingSet.restype = wintypes.BOOL
+    EmptyWorkingSet = ctypes.windll.psapi.EmptyWorkingSet
+    EmptyWorkingSet.argtypes = [wintypes.HANDLE]
+    EmptyWorkingSet.restype = wintypes.BOOL
 
-# advanced strategy: reset working set sizes (admin more likely needed)
-SetProcessWorkingSetSizeEx = ctypes.windll.kernel32.SetProcessWorkingSetSizeEx
-SetProcessWorkingSetSizeEx.argtypes = [wintypes.HANDLE, ctypes.c_size_t, ctypes.c_size_t, wintypes.DWORD]
-SetProcessWorkingSetSizeEx.restype = wintypes.BOOL
-QUOTA_FLAGS = 0x0001 | 0x0002
+    # advanced strategy: reset working set sizes (admin more likely needed)
+    SetProcessWorkingSetSizeEx = ctypes.windll.kernel32.SetProcessWorkingSetSizeEx
+    SetProcessWorkingSetSizeEx.argtypes = [wintypes.HANDLE, ctypes.c_size_t, ctypes.c_size_t, wintypes.DWORD]
+    SetProcessWorkingSetSizeEx.restype = wintypes.BOOL
+    QUOTA_FLAGS = 0x0001 | 0x0002
 
-RegisterHotKey = ctypes.windll.user32.RegisterHotKey
-RegisterHotKey.argtypes = [wintypes.HWND, wintypes.INT, wintypes.UINT, wintypes.UINT]
-RegisterHotKey.restype = wintypes.BOOL
+    RegisterHotKey = ctypes.windll.user32.RegisterHotKey
+    RegisterHotKey.argtypes = [wintypes.HWND, wintypes.INT, wintypes.UINT, wintypes.UINT]
+    RegisterHotKey.restype = wintypes.BOOL
 
-UnregisterHotKey = ctypes.windll.user32.UnregisterHotKey
-UnregisterHotKey.argtypes = [wintypes.HWND, wintypes.INT]
-UnregisterHotKey.restype = wintypes.BOOL
+    UnregisterHotKey = ctypes.windll.user32.UnregisterHotKey
+    UnregisterHotKey.argtypes = [wintypes.HWND, wintypes.INT]
+    UnregisterHotKey.restype = wintypes.BOOL
 
-GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
-GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
-GetWindowRect = ctypes.windll.user32.GetWindowRect
-GetSystemMetrics = ctypes.windll.user32.GetSystemMetrics
-SM_CXSCREEN = 0
-SM_CYSCREEN = 1
+    GetForegroundWindow = ctypes.windll.user32.GetForegroundWindow
+    GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+    GetWindowRect = ctypes.windll.user32.GetWindowRect
+    GetSystemMetrics = ctypes.windll.user32.GetSystemMetrics
+    SM_CXSCREEN = 0
+    SM_CYSCREEN = 1
 
-PROCESS_QUERY_INFORMATION = 0x0400
-PROCESS_SET_QUOTA = 0x0100
-PROCESS_VM_READ = 0x0010
-ACCESS = PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA | PROCESS_VM_READ
+    PROCESS_QUERY_INFORMATION = 0x0400
+    PROCESS_SET_QUOTA = 0x0100
+    PROCESS_VM_READ = 0x0010
+    ACCESS = PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA | PROCESS_VM_READ
 
-RUN_KEY = r"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
-RUN_VALUE = "RamGobbler"
+    RUN_KEY = r"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+    RUN_VALUE = "RamGobbler"
+else:
+    def _no_win32(*a, **k):
+        return 0
+    OpenProcess = CloseHandle = EmptyWorkingSet = SetProcessWorkingSetSizeEx = _no_win32
+    RegisterHotKey = UnregisterHotKey = _no_win32
+    GetForegroundWindow = GetWindowThreadProcessId = GetWindowRect = GetSystemMetrics = _no_win32
+    SM_CXSCREEN = SM_CYSCREEN = 0
+    PROCESS_QUERY_INFORMATION = PROCESS_SET_QUOTA = PROCESS_VM_READ = ACCESS = 0
+    RUN_KEY = ""
+    RUN_VALUE = "RamGobbler"
 
 WM_HOTKEY = 0x0312
 WM_POWERBROADCAST = 0x0218
@@ -368,15 +389,20 @@ class Target:
     pause_if_fullscreen: bool = True  # skip when a fullscreen window is active
     strategy: str = "standard"   # 'standard' or 'reset'
     last_total_rss_mb: float = 0.0
+    notify_threshold_mb: float = 0.0
+    cooldown_s: int = 0
+    reset_cap_per_min: int = 3
     # scheduling / gating
     schedule: Optional[dict] = None  # {days:[0..6], start:"HH:MM", end:"HH:MM", idle_only: bool}
     last_skip_reason: str = ""
     last_trim_reason: str = ""
     _events: Deque[dict] = field(default_factory=lambda: deque(maxlen=200), repr=False)
+    next_allowed_ts: float = field(default=0.0, repr=False)
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d.pop("_events", None)
+        d.pop("next_allowed_ts", None)
         d["history"] = self.history[-40:]
         return d
 
@@ -401,6 +427,9 @@ class Target:
             pause_if_fullscreen=bool(d.get("pause_if_fullscreen", True)),
             strategy=d.get("strategy", "standard"),
             last_total_rss_mb=float(d.get("last_total_rss_mb", 0.0)),
+            notify_threshold_mb=float(d.get("notify_threshold_mb", 0.0)),
+            cooldown_s=int(d.get("cooldown_s", 0)),
+            reset_cap_per_min=int(d.get("reset_cap_per_min", 3)),
             schedule=d.get("schedule"),
             last_skip_reason=d.get("last_skip_reason", ""),
             last_trim_reason=d.get("last_trim_reason", ""),
@@ -431,7 +460,9 @@ class Config:
         self.idle_seconds: int = 0
         self.jitter_pct: int = 10
         self.metered: bool = False
-        self.version: int = 4
+        self.daily_recap: dict = {"enabled": False, "time": "00:00"}
+        self.diag_level: int = 0
+        self.version: int = 5
 
     def load(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -461,9 +492,11 @@ class Config:
             self.idle_seconds = int(raw.get("idle_seconds", 0))
             self.jitter_pct = int(raw.get("jitter_pct", 10))
             self.metered = bool(raw.get("metered", False))
+            self.daily_recap = raw.get("daily_recap", self.daily_recap)
+            self.diag_level = int(raw.get("diag_level", 0))
             self.version = int(raw.get("version", 1))
-            if self.version < 4:
-                self.version = 4
+            if self.version < 5:
+                self.version = 5
         except Exception:
             self.targets = []
 
@@ -495,6 +528,8 @@ class Config:
             "idle_seconds": self.idle_seconds,
             "jitter_pct": self.jitter_pct,
             "metered": self.metered,
+            "daily_recap": self.daily_recap,
+            "diag_level": self.diag_level,
             "version": self.version,
         }
         with open(self.path, "w", encoding="utf-8") as f:
@@ -536,6 +571,20 @@ def match_pids(target: Target) -> List[int]:
             continue
     return pids
 
+
+def estimate_reclaim(history: List[float]) -> Tuple[float, float, float]:
+    """Estimate reclaimable memory from past trim history.
+
+    Returns a tuple of (min, median, p95) over the last up to 10 samples."""
+    if not history:
+        return (0.0, 0.0, 0.0)
+    sample = history[-10:]
+    sample_sorted = sorted(sample)
+    med = statistics.median(sample_sorted)
+    idx = int((len(sample_sorted) - 1) * 0.95)
+    p95 = sample_sorted[idx]
+    return (float(sample_sorted[0]), float(med), float(p95))
+
 # --- Background trimmer thread ---------------------------------------------
 class Gobbler(threading.Thread):
     def __init__(self, config: Config, metrics: Metrics, on_result, on_delta):
@@ -548,6 +597,7 @@ class Gobbler(threading.Thread):
         self.on_delta = on_delta
         self.helper_warned = False
         self._last_flush = time.time()
+        self._reset_times: Dict[str, Deque[float]] = {}
 
     def stop(self):
         self._stop.set()
@@ -582,6 +632,32 @@ class Gobbler(threading.Thread):
                 return False, "Paused (Battery)"
         return True, ""
 
+    def _check_cooldown_and_cap(self, t: Target, now_ts: float) -> Tuple[bool, str]:
+        if t.cooldown_s > 0 and now_ts < t.next_allowed_ts:
+            return False, "cooldown"
+        if t.strategy == "reset" and t.reset_cap_per_min > 0:
+            dq = self._reset_times.setdefault(t.key, deque())
+            while dq and now_ts - dq[0] > 60:
+                dq.popleft()
+            if len(dq) >= t.reset_cap_per_min:
+                return False, "reset_capped"
+        return True, ""
+
+    def _post_trim(self, t: Target, delta_mb: float, now_ts: float):
+        if t.cooldown_s > 0 and delta_mb >= 100:
+            t.next_allowed_ts = now_ts + t.cooldown_s
+        if t.strategy == "reset":
+            dq = self._reset_times.setdefault(t.key, deque())
+            dq.append(now_ts)
+
+    def _record_event(self, idx: int, event: dict):
+        if self.config.diag_level > 0:
+            with self._lock:
+                try:
+                    self.config.targets[idx]._events.append(event)
+                except IndexError:
+                    pass
+
     def run(self):
         while not self._stop.is_set():
             now_ts = time.time()
@@ -603,6 +679,16 @@ class Gobbler(threading.Thread):
                 if in_maint and self.config.maintenance_window.get("aggressive"):
                     eff_interval = min(eff_interval, 8)
                 if now_ts - t.last_trim_ts < eff_interval:
+                    continue
+                ok_cool, reason_cool = self._check_cooldown_and_cap(t, now_ts)
+                if not ok_cool:
+                    self.on_result(idx, reason_cool)
+                    with self._lock:
+                        try:
+                            self.config.targets[idx].last_skip_reason = reason_cool
+                        except IndexError:
+                            pass
+                    self._record_event(idx, {"ts": now_ts, "type": "skip", "reason": reason_cool})
                     continue
                 if not global_ok:
                     self.on_result(idx, global_reason)
@@ -704,6 +790,7 @@ class Gobbler(threading.Thread):
                         total_rss += after
 
                 event_ts = time.time()
+                real_t = None
                 with self._lock:
                     try:
                         real_t = self.config.targets[idx]
@@ -718,9 +805,10 @@ class Gobbler(threading.Thread):
                         if total_delta > 0:
                             real_t.history.append(total_delta)
                             real_t.history = real_t.history[-40:]
-                        real_t._events.append(
-                            {"ts": event_ts, "delta_mb": total_delta, "reason": trim_reason, "ok": trimmed > 0}
-                        )
+                        if self.config.diag_level > 0:
+                            real_t._events.append(
+                                {"ts": event_ts, "delta_mb": total_delta, "reason": trim_reason, "ok": trimmed > 0}
+                            )
                         # Adaptive interval
                         if real_t.adaptive:
                             growth = max(0.0, total_rss - real_t.last_total_rss_mb)
@@ -730,7 +818,9 @@ class Gobbler(threading.Thread):
                                 real_t.interval_sec = min(60, real_t.interval_sec + 2)
                             real_t.last_total_rss_mb = total_rss
                     except IndexError:
-                        pass
+                        real_t = None
+                if real_t is not None:
+                    self._post_trim(real_t, total_delta, event_ts)
                 msg = f"Trimmed {trimmed} procs, -{total_delta:.1f} MB"
                 if helper_needed and not self.helper_warned:
                     msg += " (helper not running)"
@@ -1892,8 +1982,36 @@ class MainWindow(QMainWindow):
 
 # --- Entry point ------------------------------------------------------------
 def main():
-    config = Config(CONFIG_PATH); config.load()
-    app = QApplication(sys.argv); win = MainWindow(config); win.show(); rc = app.exec(); config.save(); sys.exit(rc)
+    args = parse_args(sys.argv[1:])
+    config = Config(CONFIG_PATH)
+    config.load()
+    metrics = Metrics(METRICS_PATH)
+    metrics.load()
+    if args.headless:
+        result = {"ok": True, "reclaimed_mb": 0.0, "trims": 0}
+        if args.export_metrics:
+            try:
+                with open(args.export_metrics, "w", encoding="utf-8") as f:
+                    f.write(metrics.export_json(30))
+            except Exception:
+                pass
+        print(json.dumps(result))
+        return 0
+    app = QApplication(sys.argv)
+    win = MainWindow(config)
+    win.show()
+    rc = app.exec()
+    config.save()
+    return rc
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--trim-visible", action="store_true")
+    parser.add_argument("--trim-group")
+    parser.add_argument("--export-metrics")
+    return parser.parse_args(argv)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
