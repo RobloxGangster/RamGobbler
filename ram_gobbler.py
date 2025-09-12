@@ -369,6 +369,13 @@ def _startup_command() -> str:
     return f'"{_pythonw_path()}" "{script}"'
 
 def is_startup_enabled() -> bool:
+    """Return True if the app is registered to start with Windows.
+
+    On non-Windows platforms the registry APIs are unavailable, so we simply
+    return False instead of raising an AttributeError when accessed."""
+
+    if os.name != "nt" or not hasattr(winreg, "OpenKey"):
+        return False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as k:
             val, _ = winreg.QueryValueEx(k, RUN_VALUE)
@@ -378,18 +385,25 @@ def is_startup_enabled() -> bool:
     except OSError:
         return False
 
+
 def set_startup_enabled(enabled: bool) -> Tuple[bool, str]:
+    """Toggle the app's Windows start-up registration.
+
+    If called on a non-Windows platform the function returns a failure tuple
+    instead of raising errors due to missing registry support."""
+
+    if os.name != "nt" or not hasattr(winreg, "CreateKey"):
+        return False, "Unsupported platform"
     try:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
             if enabled:
                 winreg.SetValueEx(k, RUN_VALUE, 0, winreg.REG_SZ, _startup_command())
                 return True, "Enabled Start with Windows"
-            else:
-                try:
-                    winreg.DeleteValue(k, RUN_VALUE)
-                except FileNotFoundError:
-                    pass
-                return True, "Disabled Start with Windows"
+            try:
+                winreg.DeleteValue(k, RUN_VALUE)
+            except FileNotFoundError:
+                pass
+            return True, "Disabled Start with Windows"
     except OSError as e:
         return False, f"Registry error: {e}"
 
@@ -2039,10 +2053,12 @@ class MainWindow(QMainWindow):
 # --- Entry point ------------------------------------------------------------
 def main():
     args = parse_args(sys.argv[1:])
+
     config = Config(CONFIG_PATH)
     config.load()
     metrics = Metrics(METRICS_PATH)
     metrics.load()
+
     if args.headless:
         result = {"ok": True, "reclaimed_mb": 0.0, "trims": 0}
         if args.export_metrics:
@@ -2053,6 +2069,11 @@ def main():
                 pass
         print(json.dumps(result))
         return 0
+
+    if os.name != "nt":
+        print("Ram Gobbler's GUI is only supported on Windows. Use --headless for CLI mode.")
+        return 1
+
     app = QApplication(sys.argv)
     win = MainWindow(config)
     win.show()
