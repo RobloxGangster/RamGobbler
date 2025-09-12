@@ -369,6 +369,8 @@ class Group:
 
 @dataclass
 class Target:
+    """Configuration for an individual process to trim."""
+
     key: str               # identifier to match (name/path/cmdline/parent)
     match_by: str          # 'name', 'path', 'cmdline', or 'parent'
     group_id: str = ""
@@ -438,6 +440,8 @@ class Target:
 
 # --- Config -----------------------------------------------------------------
 class Config:
+    """Application configuration persisted on disk."""
+
     def __init__(self, path: str):
         self.path = path
         self.targets: List[Target] = []
@@ -633,14 +637,23 @@ class Gobbler(threading.Thread):
         return True, ""
 
     def _check_cooldown_and_cap(self, t: Target, now_ts: float) -> Tuple[bool, str]:
+        """Determine if target ``t`` may be trimmed at ``now_ts``.
+
+        Returns a tuple ``(allowed, reason)`` where ``reason`` is empty when
+        trimming is permitted.  The function enforces per-target cooldowns and
+        limits the number of ``reset``-strategy trims per minute.
+        """
+
         if t.cooldown_s > 0 and now_ts < t.next_allowed_ts:
             return False, "cooldown"
+
         if t.strategy == "reset" and t.reset_cap_per_min > 0:
             dq = self._reset_times.setdefault(t.key, deque())
             while dq and now_ts - dq[0] > 60:
                 dq.popleft()
             if len(dq) >= t.reset_cap_per_min:
                 return False, "reset_capped"
+
         return True, ""
 
     def _post_trim(self, t: Target, delta_mb: float, now_ts: float):
@@ -2006,11 +2019,13 @@ def main():
 
 
 def parse_args(argv=None):
+    """Parse command-line arguments used by the small CLI interface."""
+
     parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--trim-visible", action="store_true")
-    parser.add_argument("--trim-group")
-    parser.add_argument("--export-metrics")
+    parser.add_argument("--headless", action="store_true", help="run without GUI")
+    parser.add_argument("--trim-visible", action="store_true", help="trim currently visible targets and exit")
+    parser.add_argument("--trim-group", help="trim targets belonging to a specific group")
+    parser.add_argument("--export-metrics", help="write metrics JSON to the given path")
     return parser.parse_args(argv)
 
 if __name__ == "__main__":

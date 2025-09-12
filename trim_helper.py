@@ -34,23 +34,37 @@ QUOTA_FLAGS = 0x0001 | 0x0002
 OpenProcess = ctypes.windll.kernel32.OpenProcess
 CloseHandle = ctypes.windll.kernel32.CloseHandle
 
-def empty_working_set(pid: int) -> bool:
+
+def _with_process_handle(pid: int, fn) -> bool:
+    """Open ``pid`` and invoke ``fn`` with the handle, ensuring it is closed."""
+
     h = OpenProcess(ACCESS, False, pid)
     if not h:
         return False
     try:
-        return bool(EmptyWorkingSet(h))
+        return bool(fn(h))
     finally:
         CloseHandle(h)
 
+
+def empty_working_set(pid: int) -> bool:
+    """Trim the working set of ``pid`` using ``EmptyWorkingSet``."""
+
+    return _with_process_handle(pid, EmptyWorkingSet)
+
+
 def reset_working_set(pid: int) -> bool:
-    h = OpenProcess(ACCESS, False, pid)
-    if not h:
-        return False
-    try:
-        return bool(SetProcessWorkingSetSizeEx(h, ctypes.c_size_t(-1 & 0xFFFFFFFFFFFFFFFF), ctypes.c_size_t(-1 & 0xFFFFFFFFFFFFFFFF), QUOTA_FLAGS))
-    finally:
-        CloseHandle(h)
+    """Reset the working set size of ``pid``."""
+
+    def _reset(h):
+        return SetProcessWorkingSetSizeEx(
+            h,
+            ctypes.c_size_t(-1 & 0xFFFFFFFFFFFFFFFF),
+            ctypes.c_size_t(-1 & 0xFFFFFFFFFFFFFFFF),
+            QUOTA_FLAGS,
+        )
+
+    return _with_process_handle(pid, _reset)
 
 def rss_mb(pid: int) -> float:
     try:
