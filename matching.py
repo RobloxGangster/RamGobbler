@@ -33,27 +33,28 @@ def matches(info: Dict[str, Any], target: TargetSpec) -> bool:
         ``TargetSpec`` describing the desired matching attributes.
     """
 
-    # Normalize the key once so individual strategies can assume lowercase.
-    key = target.key.lower()
+    # Case-normalize the target once so individual strategies operate on a
+    # consistent representation.
+    key = target.key.casefold()
 
     def match_name() -> bool:
-        # Compare the process name directly against the key.
-        return (info.get("name") or "").lower() == key
+        """Case-insensitive equality on process name."""
+        return (info.get("name", "").casefold()) == key
 
     def match_path() -> bool:
-        # Normalize paths for case-insensitive matching across platforms.
-        exe = os.path.normcase(info.get("exe") or "").lower()
-        tgt = os.path.normcase(target.key).lower()
+        """Match using a normalized executable path."""
+        exe = os.path.normcase(info.get("exe", "")).casefold()
+        tgt = os.path.normcase(target.key).casefold()
         return exe == tgt
 
     def match_cmdline() -> bool:
-        # Flatten command line arguments and search for the key substring.
-        cmd = " ".join(info.get("cmdline") or []).lower()
+        """Search for the key as a substring in the command line."""
+        cmd = " ".join(info.get("cmdline") or []).casefold()
         return key in cmd
 
     def match_parent() -> bool:
-        # Parent names are stored separately; compare against the key.
-        return (info.get("parent") or "").lower() == key
+        """Compare the parent process name case-insensitively."""
+        return (info.get("parent", "").casefold()) == key
 
     # Dispatch table mapping the ``match_by`` attribute to the appropriate
     # strategy function.  Each callable performs the necessary comparison

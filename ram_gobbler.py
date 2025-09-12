@@ -60,7 +60,7 @@ from itertools import zip_longest
 from typing import Dict, List, Optional, Tuple, Deque
 from groups import group_totals
 from metrics import Metrics
-from matching import matches
+from matching import TargetSpec, matches
 from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
 
 # --- Platform check & imports ----------------------------------------------
@@ -212,7 +212,7 @@ def is_system_process(p: psutil.Process) -> bool:
             return True
         try:
             user = p.username()
-            if user.upper().endswith("\\SYSTEM") or user.upper().startswith("NT AUTHORITY\\"):
+            if user.upper().endswith("\\\\SYSTEM") or user.upper().startswith("NT AUTHORITY\\\\"):
                 return True
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             pass
@@ -553,6 +553,9 @@ def list_processes(include_system: bool) -> List[psutil.Process]:
     return procs
 
 def match_pids(target: Target) -> List[int]:
+    """Return a list of PIDs matching ``target``."""
+
+    spec = TargetSpec(key=target.key, match_by=target.match_by)
     pids: List[int] = []
     for p in psutil.process_iter(attrs=["pid", "name", "exe", "cmdline", "ppid"]):
         try:
@@ -569,7 +572,7 @@ def match_pids(target: Target) -> List[int]:
                 "cmdline": p.info.get("cmdline"),
                 "parent": parent_name,
             }
-            if matches(info, target):
+            if matches(info, spec):
                 pids.append(p.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -579,7 +582,8 @@ def match_pids(target: Target) -> List[int]:
 def estimate_reclaim(history: List[float]) -> Tuple[float, float, float]:
     """Estimate reclaimable memory from past trim history.
 
-    Returns a tuple of (min, median, p95) over the last up to 10 samples."""
+    Returns a tuple of ``(min, median, p95)`` over the last up to 10 samples.
+    """
     if not history:
         return (0.0, 0.0, 0.0)
     sample = history[-10:]
@@ -640,7 +644,7 @@ class Gobbler(threading.Thread):
         """Determine if target ``t`` may be trimmed at ``now_ts``.
 
         Returns a tuple ``(allowed, reason)`` where ``reason`` is empty when
-        trimming is permitted.  The function enforces per-target cooldowns and
+        trimming is permitted. The function enforces per-target cooldowns and
         limits the number of ``reset``-strategy trims per minute.
         """
 
@@ -711,31 +715,12 @@ class Gobbler(threading.Thread):
                         except IndexError:
                             pass
                     continue
-                if not schedule_allows_now(t.schedule, now_dt):
-                    reason = "Blocked (Schedule)"
-                    self.on_result(idx, reason)
+                gate = gate_reason(self.config, t, now_dt)
+                if gate:
+                    self.on_result(idx, gate)
                     with self._lock:
                         try:
-                            self.config.targets[idx].last_skip_reason = reason
-                        except IndexError:
-                            pass
-                    continue
-                if self.config.idle_seconds > 0 and t.schedule and t.schedule.get("idle_only"):
-                    if user_idle_seconds() < self.config.idle_seconds:
-                        reason = "Idle unmet"
-                        self.on_result(idx, reason)
-                        with self._lock:
-                            try:
-                                self.config.targets[idx].last_skip_reason = reason
-                            except IndexError:
-                                pass
-                        continue
-                if self.config.metered:
-                    reason = "Metered"
-                    self.on_result(idx, reason)
-                    with self._lock:
-                        try:
-                            self.config.targets[idx].last_skip_reason = reason
+                            self.config.targets[idx].last_skip_reason = gate
                         except IndexError:
                             pass
                     continue
@@ -1759,33 +1744,33 @@ class MainWindow(QMainWindow):
 
     def _apply_styles(self, theme: str):
         if theme == "light":
-            self.setStyleSheet("""
-                QMainWindow { background: #f5f7fb; }
-                QGroupBox { color: #0b1220; border: 1px solid #d8dce6; border-radius: 12px; margin-top: 10px; }
-                QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }
-                QLineEdit { border: 1px solid #cbd2e1; border-radius: 8px; padding: 8px; }
-                QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }
-                QToolBar { background: #f5f7fb; border-bottom: 1px solid #e5e9f2; }
-                QPushButton { background: #ecf1fb; color: #0b1220; border: 1px solid #d8dce6; border-radius: 10px; padding: 6px 12px; }
-                QPushButton:hover { background: #e3ebfb; }
-                QPushButton:pressed { background: #d6e1fb; }
-                QSpinBox { background: #ffffff; color: #0b1220; border: 1px solid #d8dce6; border-radius: 6px; padding: 4px; }
-            """)
+            self.setStyleSheet(
+                "QMainWindow { background: #f5f7fb; }\n"
+                "QGroupBox { color: #0b1220; border: 1px solid #d8dce6; border-radius: 12px; margin-top: 10px; }\n"
+                "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }\n"
+                "QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }\n"
+                "QLineEdit { border: 1px solid #cbd2e1; border-radius: 8px; padding: 8px; }\n"
+                "QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }\n"
+                "QToolBar { background: #f5f7fb; border-bottom: 1px solid #e5e9f2; }\n"
+                "QPushButton { background: #ecf1fb; color: #0b1220; border: 1px solid #d8dce6; border-radius: 10px; padding: 6px 12px; }\n"
+                "QPushButton:hover { background: #e3ebfb; }\n"
+                "QPushButton:pressed { background: #d6e1fb; }\n"
+                "QSpinBox { background: #ffffff; color: #0b1220; border: 1px solid #d8dce6; border-radius: 6px; padding: 4px; }"
+            )
         else:
-            self.setStyleSheet("""
-                QMainWindow { background: #0f1115; }
-                QGroupBox { color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 12px; margin-top: 10px; }
-                QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }
-                QLineEdit { border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
-                QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }
-                QToolBar { background: #0f1115; border-bottom: 1px solid #2a2f3a; }
-                QPushButton { background: #253042; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 10px; padding: 6px 12px; }
-                QPushButton:hover { background: #2b3a55; }
-                QPushButton:pressed { background: #1e2a3b; }
-                QSpinBox { background: #161a22; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 6px; padding: 4px; }
-            """)
+            self.setStyleSheet(
+                "QMainWindow { background: #0f1115; }\n"
+                "QGroupBox { color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 12px; margin-top: 10px; }\n"
+                "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }\n"
+                "QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }\n"
+                "QLineEdit { border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }\n"
+                "QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }\n"
+                "QToolBar { background: #0f1115; border-bottom: 1px solid #2a2f3a; }\n"
+                "QPushButton { background: #253042; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 10px; padding: 6px 12px; }\n"
+                "QPushButton:hover { background: #2b3a55; }\n"
+                "QPushButton:pressed { background: #1e2a3b; }\n"
+                "QSpinBox { background: #161a22; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 6px; padding: 4px; }"
+            )
 
     # --- System tray ---
     def _init_tray(self):
