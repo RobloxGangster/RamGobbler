@@ -8,6 +8,7 @@ much memory has been reclaimed from that target during the current session.
 """
 
 from typing import Iterable, Any, Dict, List
+from collections import defaultdict
 
 
 def filter_targets_by_group(targets: Iterable[Any], group_id: str) -> List[Any]:
@@ -35,9 +36,16 @@ def group_totals(targets: Iterable[Any]) -> Dict[str, float]:
     still account for them.
     """
 
-    totals: Dict[str, float] = {}
+    # ``defaultdict`` simplifies accumulation by avoiding missing-key checks.
+    totals: Dict[str, float] = defaultdict(float)
+
     for t in targets:
+        # Normalize group id to an empty string when missing or ``None``.
         gid = getattr(t, "group_id", "") or ""
-        totals[gid] = totals.get(gid, 0.0) + getattr(t, "session_reclaimed_mb", 0.0)
-    return totals
+
+        # Add reclaimed memory; missing metrics count as ``0``.
+        totals[gid] += getattr(t, "session_reclaimed_mb", 0.0)
+
+    # Convert back to a regular ``dict`` so callers don't depend on defaultdict.
+    return dict(totals)
 

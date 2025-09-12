@@ -15,13 +15,35 @@ def _parse_hhmm(s: str) -> int:
     """
 
     try:
+        # Split the string and convert the components to integers.
         hours, minutes = map(int, s.split(":"))
         return hours * 60 + minutes
     except Exception:
+        # Any parsing failure results in ``0`` minutes.
         return 0
 
 
-def schedule_allows_now(schedule: Optional[Dict], now: Optional[datetime] = None) -> bool:
+def _within_window(window: Dict, now: datetime) -> bool:
+    """Return ``True`` if ``now`` falls within ``window``'s start/end."""
+    # Convert configured times to absolute minutes since midnight.
+    start = _parse_hhmm(window.get("start", "00:00"))
+    end = _parse_hhmm(window.get("end", "00:00"))
+
+    # Current time expressed as minutes for easy comparison.
+    minutes = now.hour * 60 + now.minute
+
+    if start <= end:
+        # Normal case where end is later in the day.
+        return start <= minutes < end
+
+    # Handle windows that span midnight.
+    return minutes >= start or minutes < end
+
+
+def schedule_allows_now(
+    schedule: Optional[Dict],
+    now: Optional[datetime] = None,
+) -> bool:
     """Return ``True`` if ``schedule`` permits running at ``now``.
 
     ``schedule`` is a dictionary containing ``days`` (list of weekday indexes)
@@ -30,21 +52,24 @@ def schedule_allows_now(schedule: Optional[Dict], now: Optional[datetime] = None
     """
 
     if not schedule:
+        # No schedule provided: always allowed.
         return True
+
     now = now or datetime.now()
-    day = now.weekday()
+
+    # Check day-of-week restrictions first.
     days = schedule.get("days") or []
-    if days and day not in days:
+    if days and now.weekday() not in days:
         return False
-    start = _parse_hhmm(schedule.get("start", "00:00"))
-    end = _parse_hhmm(schedule.get("end", "00:00"))
-    minutes = now.hour * 60 + now.minute
-    if start <= end:
-        return start <= minutes < end
-    return minutes >= start or minutes < end
+
+    # Delegate exact time comparisons to the helper.
+    return _within_window(schedule, now)
 
 
-def window_active(window: Optional[Dict], now: Optional[datetime] = None) -> bool:
+def window_active(
+    window: Optional[Dict],
+    now: Optional[datetime] = None,
+) -> bool:
     """Check if the current time falls inside ``window``.
 
     This is similar to :func:`schedule_allows_now` but returns ``False`` when
@@ -52,14 +77,10 @@ def window_active(window: Optional[Dict], now: Optional[datetime] = None) -> boo
     """
 
     if not window:
+        # Absence of a window means trimming is inactive.
         return False
-    now = now or datetime.now()
-    start = _parse_hhmm(window.get("start", "00:00"))
-    end = _parse_hhmm(window.get("end", "00:00"))
-    minutes = now.hour * 60 + now.minute
-    if start <= end:
-        return start <= minutes < end
-    return minutes >= start or minutes < end
+
+    return _within_window(window, now or datetime.now())
 
 
 def jittered_interval(interval: int, key: str, pct: int) -> int:
@@ -70,12 +91,19 @@ def jittered_interval(interval: int, key: str, pct: int) -> int:
     """
 
     if pct <= 0 or interval <= 0:
+        # Nothing to jitter; return the original interval.
         return interval
+
+    # Calculate the maximum absolute jitter based on the percentage.
     rng = int(interval * pct / 100)
     if rng <= 0:
         return interval
+
+    # Derive a deterministic offset from the provided key.
     h = int(hashlib.sha1(key.encode()).hexdigest(), 16)
     offset = (h % (2 * rng + 1)) - rng
+
+    # Ensure the final interval stays positive.
     return max(1, interval + offset)
 
 
@@ -86,6 +114,7 @@ def user_idle_seconds() -> int:
     """
 
     if os.name != "nt":
+        # The Windows API is required for idle time queries.
         return 0
 
     class LASTINPUTINFO(ctypes.Structure):
@@ -109,15 +138,18 @@ def gate_reason(config, target, now: Optional[datetime] = None) -> str:
     """
 
     if not schedule_allows_now(getattr(target, "schedule", None), now):
+        # Target's schedule does not permit trimming at this time.
         return "Blocked (Schedule)"
 
     idle_sec = getattr(config, "idle_seconds", 0)
     schedule = getattr(target, "schedule", None) or {}
     if idle_sec > 0 and schedule.get("idle_only"):
+        # If the target requires the user to be idle, enforce it here.
         if user_idle_seconds() < idle_sec:
             return "Idle unmet"
 
     if getattr(config, "metered", False):
+        # Skip trimming on metered connections unless explicitly allowed.
         return "Metered"
 
     return ""
