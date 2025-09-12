@@ -17,14 +17,21 @@ def _parse_hhmm(s: str) -> int:
     try:
         # Split the string and convert the components to integers.
         hours, minutes = map(int, s.split(":"))
-        return hours * 60 + minutes
+        # Reject out-of-range values; ``24:00`` and beyond are invalid.
+        if 0 <= hours < 24 and 0 <= minutes < 60:
+            return hours * 60 + minutes
     except Exception:
-        # Any parsing failure results in ``0`` minutes.
-        return 0
+        pass
+    # Any parsing failure or invalid value results in ``0`` minutes.
+    return 0
 
 
 def _within_window(window: Dict, now: datetime) -> bool:
-    """Return ``True`` if ``now`` falls within ``window``'s start/end."""
+    """Return ``True`` if ``now`` falls within ``window``'s start/end.
+
+    The window may wrap across midnight when the start time is later than the
+    end time.
+    """
     # Convert configured times to absolute minutes since midnight.
     start = _parse_hhmm(window.get("start", "00:00"))
     end = _parse_hhmm(window.get("end", "00:00"))
@@ -91,8 +98,8 @@ def jittered_interval(interval: int, key: str, pct: int) -> int:
     """
 
     if pct <= 0 or interval <= 0:
-        # Nothing to jitter; return the original interval.
-        return interval
+        # Nothing to jitter; clamp to a minimum of one second.
+        return max(1, interval)
 
     # Calculate the maximum absolute jitter based on the percentage.
     rng = int(interval * pct / 100)

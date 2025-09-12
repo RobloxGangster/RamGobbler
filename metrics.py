@@ -33,9 +33,17 @@ class Metrics:
 
     def save(self) -> None:
         """Persist current metrics to ``self.path``."""
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        # ``os.path.dirname`` returns an empty string when ``path`` has no
+        # directory component; default to ``.`` so ``makedirs`` succeeds.
+        dir_path = os.path.dirname(self.path) or "."
+        os.makedirs(dir_path, exist_ok=True)
         with open(self.path, "w", encoding="utf-8") as f:
-            json.dump({"rollups": self.rollups}, f, indent=2)
+            json.dump(
+                {"rollups": self.rollups},
+                f,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
 
     # --------------------------------------------------------------- Updates --
     def add_event(self, ts: float, delta_mb: float, reason: str, strategy: str) -> None:
@@ -85,7 +93,9 @@ class Metrics:
     # --------------------------------------------------------------- Exports --
     def export_json(self, days: int) -> str:
         """Return metrics as a JSON string for the last ``days`` days."""
-        return json.dumps(self._aggregate(days), sort_keys=True)
+        return json.dumps(
+            self._aggregate(days), separators=(",", ":"), sort_keys=True
+        )
 
     def export_csv(self, days: int) -> str:
         """Return metrics as a small CSV block for the last ``days`` days."""
