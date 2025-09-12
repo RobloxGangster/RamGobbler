@@ -56,8 +56,11 @@ def user_idle_seconds() -> int:
     info = LASTINPUTINFO()
     info.cbSize = ctypes.sizeof(info)
     if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        # ``GetTickCount`` wraps roughly every 49 days, which can produce a
+        # negative difference when the last input time was recorded before the
+        # wrap.  Mask the subtraction to treat the values as unsigned.
         tick = ctypes.windll.kernel32.GetTickCount()
-        millis = tick - info.dwTime
+        millis = (tick - info.dwTime) & 0xFFFFFFFF
         return int(millis / 1000)
     return 0
 
