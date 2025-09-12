@@ -53,6 +53,7 @@ import shutil
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from matching import matches
 
 # --- Platform check ---------------------------------------------------------
 if os.name != "nt":
@@ -217,6 +218,38 @@ def rss_mb(pid: int) -> Optional[float]:
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return None
 
+# optional elevated helper ----------------------------------------------------
+HELPER_PIPE = r"\\.\pipe\RamGobblerHelper"
+
+def helper_trim(pid: int, strategy: str) -> Tuple[bool, float]:
+    """Request an elevated trim via helper service."""
+    try:
+        import win32file  # type: ignore
+    except Exception:
+        return False, 0.0
+    try:
+        handle = win32file.CreateFile(
+            HELPER_PIPE,
+            win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+            0,
+            None,
+            win32file.OPEN_EXISTING,
+            0,
+            None,
+        )
+    except Exception:
+        return False, 0.0
+    try:
+        req = json.dumps({"action": "trim", "pid": int(pid), "strategy": strategy}).encode("utf-8")
+        win32file.WriteFile(handle, req)
+        resp = win32file.ReadFile(handle, 65536)[1]
+        data = json.loads(resp.decode("utf-8"))
+        return bool(data.get("ok")), float(data.get("delta_mb") or 0.0)
+    except Exception:
+        return False, 0.0
+    finally:
+        win32file.CloseHandle(handle)
+
 # --- Foreground / fullscreen / battery -------------------------------------
 def get_foreground_pid() -> Optional[int]:
     try:
@@ -300,8 +333,8 @@ def set_startup_enabled(enabled: bool) -> Tuple[bool, str]:
 # --- Data model -------------------------------------------------------------
 @dataclass
 class Target:
-    key: str               # identifier to match (name or path) (future: cmdline/parent)
-    match_by: str          # 'name' or 'path'
+    key: str               # identifier to match (name/path/cmdline/parent)
+    match_by: str          # 'name', 'path', 'cmdline', or 'parent'
     active: bool = False
     interval_sec: int = DEFAULT_INTERVAL
     last_trim_ts: float = 0.0
@@ -433,16 +466,24 @@ def list_processes(include_system: bool) -> List[psutil.Process]:
     return procs
 
 def match_pids(target: Target) -> List[int]:
-    pids = []
-    for p in psutil.process_iter(attrs=["pid", "name", "exe", "username"]):
+    pids: List[int] = []
+    for p in psutil.process_iter(attrs=["pid", "name", "exe", "cmdline", "ppid"]):
         try:
-            if target.match_by == "name":
-                if (p.info.get("name") or "").lower() == target.key.lower():
-                    pids.append(p.pid)
-            else:  # path
-                exe = p.info.get("exe") or ""
-                if exe and os.path.normcase(exe) == os.path.normcase(target.key):
-                    pids.append(p.pid)
+            parent_name = ""
+            ppid = p.info.get("ppid")
+            if ppid:
+                try:
+                    parent_name = psutil.Process(ppid).name()
+                except Exception:
+                    parent_name = ""
+            info = {
+                "name": p.info.get("name"),
+                "exe": p.info.get("exe"),
+                "cmdline": p.info.get("cmdline"),
+                "parent": parent_name,
+            }
+            if matches(info, target):
+                pids.append(p.pid)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return pids
@@ -456,6 +497,7 @@ class Gobbler(threading.Thread):
         self._lock = threading.Lock()
         self.on_result = on_result
         self.on_delta = on_delta
+        self.helper_warned = False
 
     def stop(self):
         self._stop.set()
@@ -519,6 +561,7 @@ class Gobbler(threading.Thread):
                 trimmed = 0
                 total_delta = 0.0
                 total_rss = 0.0
+                helper_needed = False
                 for pid in pids:
                     try:
                         if self.config.protect_system and is_system_process(psutil.Process(pid)):
@@ -543,11 +586,22 @@ class Gobbler(threading.Thread):
                     else:
                         ok = empty_working_set(pid)
                     after = rss_mb(pid)
+                    delta = 0.0
                     if ok:
                         trimmed += 1
-                    if before is not None and after is not None:
-                        d = max(0.0, before - after)
-                        total_delta += d
+                        if before is not None and after is not None:
+                            delta = max(0.0, before - after)
+                    else:
+                        ok2, delta = helper_trim(pid, t.strategy)
+                        if ok2:
+                            trimmed += 1
+                            after = rss_mb(pid)
+                        else:
+                            helper_needed = True
+                            if before is not None and after is not None:
+                                delta = max(0.0, before - after)
+                    total_delta += delta
+                    if after is not None:
                         total_rss += after
 
                 with self._lock:
@@ -572,7 +626,11 @@ class Gobbler(threading.Thread):
                             real_t.last_total_rss_mb = total_rss
                     except IndexError:
                         pass
-                self.on_result(idx, f"Trimmed {trimmed} procs, -{total_delta:.1f} MB")
+                msg = f"Trimmed {trimmed} procs, -{total_delta:.1f} MB"
+                if helper_needed and not self.helper_warned:
+                    msg += " (helper not running)"
+                    self.helper_warned = True
+                self.on_result(idx, msg)
                 if total_delta > 0:
                     self.on_delta(total_delta)
             time.sleep(1)
@@ -874,25 +932,45 @@ class AddTargetDialog(QDialog):
         self.setMinimumWidth(520)
         form = QFormLayout(self)
         self.le_key = QLineEdit(key)
-        self.le_match = QLineEdit(match_by)
-        self.le_match.setReadOnly(True)
+        self.cmb_match = QComboBox()
+        self.cmb_match.addItems(["name", "path", "cmdline", "parent"])
+        if match_by in ["name", "path", "cmdline", "parent"]:
+            self.cmb_match.setCurrentText(match_by)
         self.sb_interval = QSpinBox()
         self.sb_interval.setRange(3, 600)
         self.sb_interval.setValue(DEFAULT_INTERVAL)
         self.cb_autostart = QCheckBox("Auto-start gobbling for this target")
-        form.addRow("Target:", self.le_key)
-        form.addRow("Match by:", self.le_match)
+        self.lbl_preview = QLabel("Matches: 0")
+        self.le_key.textChanged.connect(self._update_preview)
+        self.cmb_match.currentTextChanged.connect(self._update_preview)
+        form.addRow("Target pattern:", self.le_key)
+        form.addRow("Match by:", self.cmb_match)
+        form.addRow("Preview:", self.lbl_preview)
         form.addRow("Interval (s):", self.sb_interval)
         form.addRow("", self.cb_autostart)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addWidget(buttons)
+        QTimer.singleShot(0, self._update_preview)
+
+    def _update_preview(self):
+        key = self.le_key.text().strip()
+        match_by = self.cmb_match.currentText()
+        if not key:
+            self.lbl_preview.setText("Matches: 0")
+            return
+        t = Target(key=key, match_by=match_by)
+        try:
+            count = len(match_pids(t))
+        except Exception:
+            count = 0
+        self.lbl_preview.setText(f"Matches: {count}")
 
     def get_values(self) -> Tuple[str, str, int, bool]:
         return (
             self.le_key.text().strip(),
-            self.le_match.text().strip(),
+            self.cmb_match.currentText(),
             int(self.sb_interval.value()),
             bool(self.cb_autostart.isChecked()),
         )
