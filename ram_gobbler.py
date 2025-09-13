@@ -1769,11 +1769,8 @@ class MainWindow(QMainWindow):
         scroll = self.table.verticalScrollBar().value()
         self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save()
         self.proc_model.set_include_system(self.config.show_system)
-        self._select_pid(pid)
-        # Restore the user's scroll position after the model refresh and
-        # re-selection.  Calling _select_pid can cause the view to jump to the
-        # selected row, so we reapply the saved scrollbar value afterwards.
         self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
 
     def _on_group_selected(self, gid: str):
         self.current_group = gid
@@ -1870,11 +1867,8 @@ class MainWindow(QMainWindow):
         pid = self._current_pid()
         scroll = self.table.verticalScrollBar().value()
         self.proc_model.refresh()
-        self._select_pid(pid)
-        # Reapply the saved scroll position after re-selecting the process.
-        # Selecting a row can scroll the view; setting the scrollbar afterwards
-        # preserves the user's place while keeping the same selection.
         self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
         self.targets_table.refresh()
         if self.stack.currentWidget() == self.dashboard:
             self.dashboard.refresh(self.session_reclaimed_total)
@@ -1883,10 +1877,8 @@ class MainWindow(QMainWindow):
         pid = self._current_pid()
         scroll = self.table.verticalScrollBar().value()
         self.proc_model.refresh()
-        self._select_pid(pid)
-        # Restore scroll position after selecting the row to avoid jumping
-        # back to the top during refreshes.
         self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
 
     def _current_pid(self) -> Optional[int]:
         if not self.table.selectionModel():
