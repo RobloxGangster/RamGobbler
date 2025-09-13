@@ -63,12 +63,25 @@ from metrics import Metrics
 from matching import matches
 from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
 
+try:
+    import psutil
+except ModuleNotFoundError:
+    msg = (
+        "Required dependency 'psutil' is missing.\n"
+        "Install it with: pip install psutil"
+    )
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, msg, "Ram Gobbler", 0)
+    else:
+        print(msg, file=sys.stderr)
+    sys.exit(1)
+
 # --- Platform check & imports ----------------------------------------------
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
     import winreg
-    import psutil
     from PySide6.QtCore import (
         Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
         QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent
@@ -83,7 +96,6 @@ if os.name == "nt":
         QListWidget, QInputDialog, QStackedWidget,
     )
 else:
-    import psutil
     import types
     _dummy_class = type("_Dummy", (), {})
     Qt = types.SimpleNamespace(DisplayRole=0)
@@ -2037,16 +2049,16 @@ if __name__ == "__main__":
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
             with open(os.path.join(CONFIG_DIR, "error.log"), "a", encoding="utf-8") as f:
-                f.write(f"
-=== Crash {time.strftime('%Y-%m-%d %H:%M:%S')} ===
-{err}
-")
+                f.write(
+                    f"\n=== Crash {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n{err}\n"
+                )
         except Exception:
             pass
         try:
             app = QApplication.instance() or QApplication(sys.argv)
-            QMessageBox.critical(None, APP_NAME, f"Unexpected error:
-{err[:4000]}")
+            QMessageBox.critical(
+                None, APP_NAME, f"Unexpected error:\n{err[:4000]}"
+            )
         except Exception:
             pass
         raise
