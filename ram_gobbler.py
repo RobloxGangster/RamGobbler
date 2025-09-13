@@ -98,10 +98,13 @@ if os.name == "nt":
 else:
     import types
     _dummy_class = type("_Dummy", (), {})
-    Qt = types.SimpleNamespace(DisplayRole=0)
+    Qt = types.SimpleNamespace(DisplayRole=0, ScrollBarAsNeeded=0)
     QAbstractTableModel = QModelIndex = QSortFilterProxyModel = QTimer = QSize = QAbstractNativeEventFilter = QRect = QEvent = _dummy_class
     QIcon = QAction = QKeySequence = QPainter = QPen = _dummy_class
     QApplication = QMainWindow = QWidget = QVBoxLayout = QHBoxLayout = QGroupBox = QLineEdit = QTableView = QPushButton = QLabel = QHeaderView = QToolBar = QSpinBox = QFileDialog = QMessageBox = QAbstractItemView = QSplitter = QStyle = QTableWidget = QTableWidgetItem = QCheckBox = QMenu = QDialog = QFormLayout = QDialogButtonBox = QSystemTrayIcon = QKeySequenceEdit = QComboBox = QListWidget = QInputDialog = QStackedWidget = _dummy_class
+    QAbstractItemView.ScrollPerPixel = 0
+    QAbstractItemView.SelectRows = 0
+    QAbstractItemView.NoEditTriggers = 0
     ctypes = types.SimpleNamespace(Structure=object, c_size_t=int)
     wintypes = types.SimpleNamespace(
         DWORD=int, BOOL=int, HANDLE=int, HWND=int, INT=int, UINT=int, LONG=int,
@@ -1127,7 +1130,11 @@ class TargetsTable(QTableWidget):
         self.group_filter = ""
         self.index_to_row: Dict[int, int] = {}
         self.setHorizontalHeaderLabels(self.HEADERS)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setStretchLastSection(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1168,6 +1175,8 @@ class TargetsTable(QTableWidget):
                 self._add_group_header(self._group_name(gid), total, agg_hist)
                 for idx, t in members:
                     self._add_row(idx, t)
+
+        self.resizeColumnsToContents()
 
     def _add_group_header(self, name: str, total: float, history: List[float]):
         row = self.rowCount()
