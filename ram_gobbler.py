@@ -1140,10 +1140,6 @@ class TargetsTable(QTableWidget):
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setAlternatingRowColors(True)
         self.refresh()
-        # Size columns once the table has initial data. Doing this on every
-        # refresh caused the scroll position to reset, so defer it to a queued
-        # event after the first population.
-        QTimer.singleShot(0, self.resizeColumnsToContents)
 
     def set_group_filter(self, gid: str):
         self.group_filter = gid
@@ -1167,33 +1163,29 @@ class TargetsTable(QTableWidget):
         selected_indices = [idx for idx, row in self.index_to_row.items() if row in selected_rows]
         scroll_val = self.verticalScrollBar().value() if hasattr(self, "verticalScrollBar") else 0
 
-        # Temporarily disable updates to avoid scrollbar jumps while the table
-        # is being rebuilt.
-        self.setUpdatesEnabled(False)
-        try:
-            self.setRowCount(0)
-            self.index_to_row = {}
-            if self.group_filter:
-                for idx, t in enumerate(self.config.targets):
-                    if t.group_id == self.group_filter:
-                        self._add_row(idx, t)
-            else:
-                groups: Dict[str, List[Tuple[int, Target]]] = {}
-                for idx, t in enumerate(self.config.targets):
-                    groups.setdefault(t.group_id or "", []).append((idx, t))
-                order = [""] + [g.id for g in self.config.groups if g.id]
-                for gid in order:
-                    members = groups.get(gid, [])
-                    if not members:
-                        continue
-                    total = sum(t.session_reclaimed_mb for _, t in members)
-                    histories = [t.history for _, t in members]
-                    agg_hist = [sum(vals) for vals in zip_longest(*histories, fillvalue=0.0)]
-                    self._add_group_header(self._group_name(gid), total, agg_hist)
-                    for idx, t in members:
-                        self._add_row(idx, t)
-        finally:
-            self.setUpdatesEnabled(True)
+        self.setRowCount(0)
+        self.index_to_row = {}
+        if self.group_filter:
+            for idx, t in enumerate(self.config.targets):
+                if t.group_id == self.group_filter:
+                    self._add_row(idx, t)
+        else:
+            groups: Dict[str, List[Tuple[int, Target]]] = {}
+            for idx, t in enumerate(self.config.targets):
+                groups.setdefault(t.group_id or "", []).append((idx, t))
+            order = [""] + [g.id for g in self.config.groups if g.id]
+            for gid in order:
+                members = groups.get(gid, [])
+                if not members:
+                    continue
+                total = sum(t.session_reclaimed_mb for _, t in members)
+                histories = [t.history for _, t in members]
+                agg_hist = [sum(vals) for vals in zip_longest(*histories, fillvalue=0.0)]
+                self._add_group_header(self._group_name(gid), total, agg_hist)
+                for idx, t in members:
+                    self._add_row(idx, t)
+
+        self.resizeColumnsToContents()
 
         # Restore selection and scroll position after the table has been
         # repopulated.
@@ -1202,13 +1194,7 @@ class TargetsTable(QTableWidget):
             if row is not None:
                 self.selectRow(row)
         if hasattr(self, "verticalScrollBar"):
-            bar = self.verticalScrollBar()
-            # Setting the value immediately can still be overridden by Qt's
-            # layout passes, so apply it twice: now and again on the next event
-            # loop iteration.
-            bar.setValue(scroll_val)
-            if hasattr(QTimer, "singleShot"):
-                QTimer.singleShot(0, lambda v=scroll_val, b=bar: b.setValue(v))
+            self.verticalScrollBar().setValue(scroll_val)
 
     def _add_group_header(self, name: str, total: float, history: List[float]):
         row = self.rowCount()
@@ -1783,11 +1769,8 @@ class MainWindow(QMainWindow):
         scroll = self.table.verticalScrollBar().value()
         self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save()
         self.proc_model.set_include_system(self.config.show_system)
-        self._select_pid(pid)
-        # Restore the user's scroll position after the model refresh and
-        # re-selection.  Calling _select_pid can cause the view to jump to the
-        # selected row, so we reapply the saved scrollbar value afterwards.
         self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
 
     def _on_group_selected(self, gid: str):
         self.current_group = gid
@@ -1882,18 +1865,11 @@ class MainWindow(QMainWindow):
     # --- Periodic refresh ---
     def _refresh_periodic(self):
         pid = self._current_pid()
-        proc_scroll = self.table.verticalScrollBar().value()
-
+        scroll = self.table.verticalScrollBar().value()
         self.proc_model.refresh()
+        self.table.verticalScrollBar().setValue(scroll)
         self._select_pid(pid)
-        # Reapply the saved scroll position after re-selecting the process.
-        # Selecting a row can scroll the view; setting the scrollbar afterwards
-        # preserves the user's place while keeping the same selection.
-        self.table.verticalScrollBar().setValue(proc_scroll)
-
-        # Targets table handles preserving its own scroll/selection state.
         self.targets_table.refresh()
-
         if self.stack.currentWidget() == self.dashboard:
             self.dashboard.refresh(self.session_reclaimed_total)
 
@@ -1901,10 +1877,8 @@ class MainWindow(QMainWindow):
         pid = self._current_pid()
         scroll = self.table.verticalScrollBar().value()
         self.proc_model.refresh()
-        self._select_pid(pid)
-        # Restore scroll position after selecting the row to avoid jumping
-        # back to the top during refreshes.
         self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
 
     def _current_pid(self) -> Optional[int]:
         if not self.table.selectionModel():
