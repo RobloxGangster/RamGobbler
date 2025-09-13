@@ -61,3 +61,7 @@ pyinstaller -F -w -n "RamGobbler" ram_gobbler.py
 ## Notes
 - Trimming may require Administrator privileges for some processes.
 - The Reset strategy (advanced) is more forceful; we fall back to standard if it fails.
+
+
+### Crash log
+If the app crashes on startup, a traceback is written to `%APPDATA%/RamGobbler/error.log`.
