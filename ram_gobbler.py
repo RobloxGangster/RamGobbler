@@ -2037,16 +2037,16 @@ if __name__ == "__main__":
         try:
             os.makedirs(CONFIG_DIR, exist_ok=True)
             with open(os.path.join(CONFIG_DIR, "error.log"), "a", encoding="utf-8") as f:
-                f.write(f"
-=== Crash {time.strftime('%Y-%m-%d %H:%M:%S')} ===
-{err}
-")
+                f.write(
+                    f"\n=== Crash {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n{err}\n"
+                )
         except Exception:
             pass
         try:
             app = QApplication.instance() or QApplication(sys.argv)
-            QMessageBox.critical(None, APP_NAME, f"Unexpected error:
-{err[:4000]}")
+            QMessageBox.critical(
+                None, APP_NAME, f"Unexpected error:\n{err[:4000]}"
+            )
         except Exception:
             pass
         raise
