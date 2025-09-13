@@ -1127,7 +1127,10 @@ class TargetsTable(QTableWidget):
         self.group_filter = ""
         self.index_to_row: Dict[int, int] = {}
         self.setHorizontalHeaderLabels(self.HEADERS)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        header = self.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setStretchLastSection(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
