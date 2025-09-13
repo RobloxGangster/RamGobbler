@@ -1154,6 +1154,15 @@ class TargetsTable(QTableWidget):
         return gid
 
     def refresh(self):
+        # Preserve selection and scroll before rebuilding the table.  The
+        # periodic refresh of the UI caused the view to reset which in turn
+        # cleared any selection and snapped the scroll position back to the
+        # top.  Remember the selected target indices (mapped from rows) and the
+        # current scrollbar value so we can restore them after the refresh.
+        selected_rows = {i.row() for i in self.selectionModel().selectedRows()} if self.selectionModel() else set()
+        selected_indices = [idx for idx, row in self.index_to_row.items() if row in selected_rows]
+        scroll_val = self.verticalScrollBar().value() if hasattr(self, "verticalScrollBar") else 0
+
         self.setRowCount(0)
         self.index_to_row = {}
         if self.group_filter:
@@ -1177,6 +1186,15 @@ class TargetsTable(QTableWidget):
                     self._add_row(idx, t)
 
         self.resizeColumnsToContents()
+
+        # Restore selection and scroll position after the table has been
+        # repopulated.
+        for idx in selected_indices:
+            row = self.index_to_row.get(idx)
+            if row is not None:
+                self.selectRow(row)
+        if hasattr(self, "verticalScrollBar"):
+            self.verticalScrollBar().setValue(scroll_val)
 
     def _add_group_header(self, name: str, total: float, history: List[float]):
         row = self.rowCount()
@@ -1743,7 +1761,16 @@ class MainWindow(QMainWindow):
         self.config.startup_enabled = bool(on); self.config.save(); self.statusBar().showMessage(msg, 3000)
 
     def _toggle_show_system(self, _):
-        self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save(); self.proc_model.set_include_system(self.config.show_system)
+        # Preserve current selection and scroll position when toggling the
+        # visibility of system processes.  The underlying model refreshes which
+        # previously caused the view to jump back to the top and lose the
+        # selected process.
+        pid = self._current_pid()
+        scroll = self.table.verticalScrollBar().value()
+        self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save()
+        self.proc_model.set_include_system(self.config.show_system)
+        self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
 
     def _on_group_selected(self, gid: str):
         self.current_group = gid
@@ -1837,12 +1864,48 @@ class MainWindow(QMainWindow):
 
     # --- Periodic refresh ---
     def _refresh_periodic(self):
-        self.proc_model.refresh(); self.targets_table.refresh()
+        pid = self._current_pid()
+        scroll = self.table.verticalScrollBar().value()
+        self.proc_model.refresh()
+        self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
+        self.targets_table.refresh()
         if self.stack.currentWidget() == self.dashboard:
             self.dashboard.refresh(self.session_reclaimed_total)
 
     def _refresh_processes(self):
+        pid = self._current_pid()
+        scroll = self.table.verticalScrollBar().value()
         self.proc_model.refresh()
+        self.table.verticalScrollBar().setValue(scroll)
+        self._select_pid(pid)
+
+    def _current_pid(self) -> Optional[int]:
+        if not self.table.selectionModel():
+            return None
+        idx = self.table.selectionModel().currentIndex()
+        if not idx.isValid():
+            return None
+        src = self.proxy.mapToSource(idx)
+        if not src.isValid():
+            return None
+        try:
+            return self.proc_model.row_at(src.row())[1]
+        except Exception:
+            return None
+
+    def _select_pid(self, pid: Optional[int]):
+        if pid is None:
+            return
+        for row in range(self.proc_model.rowCount()):
+            try:
+                if self.proc_model.row_at(row)[1] == pid:
+                    src_index = self.proc_model.index(row, 0)
+                    proxy_index = self.proxy.mapFromSource(src_index)
+                    self.table.selectRow(proxy_index.row())
+                    break
+            except Exception:
+                continue
 
     def _gobble_all(self):
         for i, t in enumerate(self.config.targets):
