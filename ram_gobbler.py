@@ -57,7 +57,7 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from collections import deque
 from itertools import zip_longest
-from typing import Dict, List, Optional, Tuple, Deque
+from typing import Dict, List, Optional, Tuple, Deque, Callable
 from groups import group_totals
 from metrics import Metrics
 from matching import matches
@@ -84,7 +84,7 @@ if os.name == "nt":
     import winreg
     from PySide6.QtCore import (
         Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
-        QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent
+        QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject
     )
     from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
     from PySide6.QtWidgets import (
@@ -100,7 +100,7 @@ else:
     _dummy_class = type("_Dummy", (), {})
     Qt = types.SimpleNamespace(DisplayRole=0, ScrollBarAsNeeded=0)
     QAbstractTableModel = QModelIndex = QSortFilterProxyModel = QTimer = QSize = QAbstractNativeEventFilter = QRect = QEvent = _dummy_class
-    QIcon = QAction = QKeySequence = QPainter = QPen = _dummy_class
+    QIcon = QAction = QKeySequence = QPainter = QPen = QObject = _dummy_class
     QApplication = QMainWindow = QWidget = QVBoxLayout = QHBoxLayout = QGroupBox = QLineEdit = QTableView = QPushButton = QLabel = QHeaderView = QToolBar = QSpinBox = QFileDialog = QMessageBox = QAbstractItemView = QSplitter = QStyle = QTableWidget = QTableWidgetItem = QCheckBox = QMenu = QDialog = QFormLayout = QDialogButtonBox = QSystemTrayIcon = QKeySequenceEdit = QComboBox = QListWidget = QInputDialog = QStackedWidget = _dummy_class
     QAbstractItemView.ScrollPerPixel = 0
     QAbstractItemView.SelectRows = 0
@@ -388,6 +388,7 @@ class Target:
 
     key: str               # identifier to match (name/path/cmdline/parent)
     match_by: str          # 'name', 'path', 'cmdline', or 'parent'
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     group_id: str = ""
     active: bool = False
     interval_sec: int = DEFAULT_INTERVAL
@@ -428,6 +429,7 @@ class Target:
         return Target(
             key=d.get("key", ""),
             match_by=d.get("match_by", "name"),
+            uid=d.get("uid") or uuid.uuid4().hex[:10],
             active=bool(d.get("active", False)),
             interval_sec=int(d.get("interval_sec", DEFAULT_INTERVAL)),
             last_trim_ts=float(d.get("last_trim_ts", 0.0)),
@@ -904,25 +906,72 @@ class ProcessTableModel(QAbstractTableModel):
         super().__init__()
         self.include_system = include_system
         self._rows: List[Tuple[str, int, float, str]] = []
+        self._refreshing = False
+        self._lock = threading.Lock()
+        self._pending_refresh = False
+        self._pending_callbacks: List[Callable[[], None]] = []
         self.refresh()
 
-    def set_include_system(self, val: bool):
+    def set_include_system(self, val: bool, done=None):
         self.include_system = val
-        self.refresh()
+        self.refresh(done)
 
-    def refresh(self):
-        procs = list_processes(self.include_system)
-        rows = []
-        for p in procs:
-            name = p.info.get("name") or ""
-            pid = p.pid
-            rss = (p.info.get("memory_info").rss if p.info.get("memory_info") else 0) / (1024 * 1024)
-            exe = p.info.get("exe") or ""
-            rows.append((name, pid, rss, exe))
-        rows.sort(key=lambda r: (-r[2], r[0].lower()))
-        self.beginResetModel()
-        self._rows = rows
-        self.endResetModel()
+    def refresh(self, done=None):
+        callback = done if callable(done) else None
+        with self._lock:
+            if self._refreshing:
+                if callback:
+                    self._pending_callbacks.append(callback)
+                self._pending_refresh = True
+                return
+            self._refreshing = True
+        self._start_worker(callback)
+
+    def _start_worker(self, callback: Optional[Callable[[], None]]):
+        def worker():
+            rows: List[Tuple[str, int, float, str]] = []
+            try:
+                procs = list_processes(self.include_system)
+                for p in procs:
+                    name = p.info.get("name") or ""
+                    pid = p.pid
+                    rss = (p.info.get("memory_info").rss if p.info.get("memory_info") else 0) / (1024 * 1024)
+                    exe = p.info.get("exe") or ""
+                    rows.append((name, pid, rss, exe))
+            except Exception:
+                rows = []
+            rows.sort(key=lambda r: (-r[2], r[0].lower()))
+
+            def apply():
+                callbacks: List[Callable[[], None]] = []
+                if rows != self._rows:
+                    self.beginResetModel()
+                    self._rows = rows
+                    self.endResetModel()
+                else:
+                    self._rows = rows
+                if callback:
+                    callbacks.append(callback)
+                with self._lock:
+                    callbacks.extend(self._pending_callbacks)
+                    self._pending_callbacks.clear()
+                    rerun = self._pending_refresh
+                    self._pending_refresh = False
+                    self._refreshing = False
+                for cb in callbacks:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
+                if rerun:
+                    self.refresh()
+
+            if hasattr(QTimer, "singleShot"):
+                QTimer.singleShot(0, apply)
+            else:
+                apply()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._rows)
@@ -1044,7 +1093,7 @@ class GroupsSidebar(QWidget):
         self.config.save()
         self.refresh()
         if hasattr(self.parent(), "targets_table"):
-            self.parent().targets_table.refresh()
+            self.parent().targets_table.refresh(force=True)
 
     def _rename(self):
         row = self.list.currentRow()
@@ -1058,7 +1107,7 @@ class GroupsSidebar(QWidget):
         self.config.save()
         self.refresh()
         if hasattr(self.parent(), "targets_table"):
-            self.parent().targets_table.refresh()
+            self.parent().targets_table.refresh(force=True)
 
     def _delete(self):
         row = self.list.currentRow()
@@ -1071,7 +1120,7 @@ class GroupsSidebar(QWidget):
         self.config.save()
         self.refresh()
         if hasattr(self.parent(), "targets_table"):
-            self.parent().targets_table.refresh()
+            self.parent().targets_table.refresh(force=True)
 
 # --- Target rules dialog ----------------------------------------------------
 class RulesDialog(QDialog):
@@ -1116,6 +1165,46 @@ class RulesDialog(QDialog):
         t.strategy = self.cb_strategy.currentText()
         return t
 
+# --- UI interaction helpers -------------------------------------------------
+class _InteractionWatcher(QObject):
+    """Tracks whether a widget (and its children) are actively being used."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.active = False
+
+    def attach(self, widget):
+        if widget is None:
+            return
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        etype = event.type()
+        if etype in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
+            self.active = True
+        elif etype == QEvent.MouseButtonRelease:
+            self._schedule_clear()
+        elif etype == QEvent.Wheel:
+            self.active = True
+            self._schedule_clear()
+        elif etype == QEvent.Leave:
+            self._schedule_clear()
+        return False
+
+    def _schedule_clear(self):
+        if hasattr(QTimer, "singleShot"):
+            QTimer.singleShot(120, self._clear_if_idle)
+        else:
+            self._clear_if_idle()
+
+    def _clear_if_idle(self):
+        try:
+            if not QApplication.mouseButtons():
+                self.active = False
+        except Exception:
+            self.active = False
+
+
 # --- Targets table ----------------------------------------------------------
 class TargetsTable(QTableWidget):
     HEADERS = [
@@ -1128,7 +1217,14 @@ class TargetsTable(QTableWidget):
         self.config = config
         self.gobbler = gobbler
         self.group_filter = ""
-        self.index_to_row: Dict[int, int] = {}
+        self.uid_to_row: Dict[str, int] = {}
+        self._row_targets: List[Optional[str]] = []
+        self._interaction = _InteractionWatcher(self)
+        self._tracked_widgets: set[int] = set()
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._flush_pending_refresh)
+        self._pending_refresh_force = False
         self.setHorizontalHeaderLabels(self.HEADERS)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -1139,11 +1235,24 @@ class TargetsTable(QTableWidget):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setAlternatingRowColors(True)
-        self.refresh()
+        self._register_interaction(self)
+        if hasattr(self, "viewport"):
+            self._register_interaction(self.viewport())
+        bar = self.verticalScrollBar() if hasattr(self, "verticalScrollBar") else None
+        if bar:
+            self._register_interaction(bar)
+        hbar = self.horizontalScrollBar() if hasattr(self, "horizontalScrollBar") else None
+        if hbar:
+            self._register_interaction(hbar)
+        self.refresh(force=True)
+        # Size columns once the table has initial data. Doing this on every
+        # refresh caused the scroll position to reset, so defer it to a queued
+        # event after the first population.
+        QTimer.singleShot(0, self.resizeColumnsToContents)
 
     def set_group_filter(self, gid: str):
         self.group_filter = gid
-        self.refresh()
+        self.refresh(force=True)
 
     def _group_name(self, gid: str) -> str:
         if not gid:
@@ -1153,52 +1262,120 @@ class TargetsTable(QTableWidget):
                 return g.name
         return gid
 
-    def refresh(self):
-        # Preserve selection and scroll before rebuilding the table.  The
-        # periodic refresh of the UI caused the view to reset which in turn
-        # cleared any selection and snapped the scroll position back to the
-        # top.  Remember the selected target indices (mapped from rows) and the
-        # current scrollbar value so we can restore them after the refresh.
-        selected_rows = {i.row() for i in self.selectionModel().selectedRows()} if self.selectionModel() else set()
-        selected_indices = [idx for idx, row in self.index_to_row.items() if row in selected_rows]
-        scroll_val = self.verticalScrollBar().value() if hasattr(self, "verticalScrollBar") else 0
+    def refresh(self, force: bool = False):
+        if self.is_busy():
+            self._pending_refresh_force = self._pending_refresh_force or force
+            self._refresh_timer.start(200)
+            return
+        if self._refresh_timer.isActive():
+            self._refresh_timer.stop()
+        self._pending_refresh_force = False
 
-        self.setRowCount(0)
-        self.index_to_row = {}
-        if self.group_filter:
-            for idx, t in enumerate(self.config.targets):
-                if t.group_id == self.group_filter:
-                    self._add_row(idx, t)
-        else:
-            groups: Dict[str, List[Tuple[int, Target]]] = {}
-            for idx, t in enumerate(self.config.targets):
-                groups.setdefault(t.group_id or "", []).append((idx, t))
-            order = [""] + [g.id for g in self.config.groups if g.id]
-            for gid in order:
-                members = groups.get(gid, [])
-                if not members:
-                    continue
-                total = sum(t.session_reclaimed_mb for _, t in members)
-                histories = [t.history for _, t in members]
-                agg_hist = [sum(vals) for vals in zip_longest(*histories, fillvalue=0.0)]
-                self._add_group_header(self._group_name(gid), total, agg_hist)
-                for idx, t in members:
-                    self._add_row(idx, t)
+        scroll_val, selected_uids = self._capture_state()
 
-        self.resizeColumnsToContents()
+        self.setUpdatesEnabled(False)
+        try:
+            self.setRowCount(0)
+            self.uid_to_row.clear()
+            self._row_targets = []
+            if self.group_filter:
+                for idx, t in enumerate(self.config.targets):
+                    if t.group_id == self.group_filter:
+                        self._add_row(idx, t)
+            else:
+                groups: Dict[str, List[Tuple[int, Target]]] = {}
+                for idx, t in enumerate(self.config.targets):
+                    groups.setdefault(t.group_id or "", []).append((idx, t))
+                order = [""] + [g.id for g in self.config.groups if g.id]
+                for gid in order:
+                    members = groups.get(gid, [])
+                    if not members:
+                        continue
+                    total = sum(t.session_reclaimed_mb for _, t in members)
+                    histories = [t.history for _, t in members]
+                    agg_hist = [sum(vals) for vals in zip_longest(*histories, fillvalue=0.0)]
+                    self._add_group_header(self._group_name(gid), total, agg_hist)
+                    for idx, t in members:
+                        self._add_row(idx, t)
+        finally:
+            self.setUpdatesEnabled(True)
 
-        # Restore selection and scroll position after the table has been
-        # repopulated.
-        for idx in selected_indices:
-            row = self.index_to_row.get(idx)
+        self._restore_state(scroll_val, selected_uids)
+
+    def _flush_pending_refresh(self):
+        force = self._pending_refresh_force
+        self._pending_refresh_force = False
+        self.refresh(force=force)
+
+    def _register_interaction(self, widget):
+        if widget is None:
+            return
+        wid = id(widget)
+        if wid in self._tracked_widgets:
+            return
+        self._tracked_widgets.add(wid)
+        self._interaction.attach(widget)
+
+    def _capture_state(self) -> Tuple[int, List[str]]:
+        bar = self.verticalScrollBar() if hasattr(self, "verticalScrollBar") else None
+        scroll_val = bar.value() if bar else 0
+        selected: List[str] = []
+        if self.selectionModel():
+            for index in self.selectionModel().selectedRows():
+                row = index.row()
+                if 0 <= row < len(self._row_targets):
+                    uid = self._row_targets[row]
+                    if uid:
+                        selected.append(uid)
+        return scroll_val, selected
+
+    def _restore_state(self, scroll_val: int, selected_uids: List[str]):
+        bar = self.verticalScrollBar() if hasattr(self, "verticalScrollBar") else None
+
+        def apply_scroll():
+            if not bar:
+                return
+            bar.blockSignals(True)
+            try:
+                bar.setValue(max(bar.minimum(), min(scroll_val, bar.maximum())))
+            finally:
+                bar.blockSignals(False)
+
+        apply_scroll()
+        if self.selectionModel():
+            self.selectionModel().clearSelection()
+            for uid in selected_uids:
+                row = self.uid_to_row.get(uid)
+                if row is not None:
+                    self.selectRow(row)
+
+        if bar and hasattr(QTimer, "singleShot"):
+            captured = list(selected_uids)
+            QTimer.singleShot(0, lambda b=bar, v=scroll_val, u=captured: self._finalize_restore(b, v, u))
+            QTimer.singleShot(120, lambda b=bar, v=scroll_val, u=captured: self._finalize_restore(b, v, u))
+
+    def _finalize_restore(self, bar, scroll_val: int, selected_uids: List[str]):
+        if bar:
+            bar.blockSignals(True)
+            try:
+                bar.setValue(max(bar.minimum(), min(scroll_val, bar.maximum())))
+            finally:
+                bar.blockSignals(False)
+        if not self.selectionModel():
+            return
+        for uid in selected_uids:
+            row = self.uid_to_row.get(uid)
             if row is not None:
                 self.selectRow(row)
-        if hasattr(self, "verticalScrollBar"):
-            self.verticalScrollBar().setValue(scroll_val)
+
+    def is_busy(self) -> bool:
+        bar = self.verticalScrollBar() if hasattr(self, "verticalScrollBar") else None
+        return bool(bar and bar.isSliderDown()) or self._interaction.active
 
     def _add_group_header(self, name: str, total: float, history: List[float]):
         row = self.rowCount()
         self.insertRow(row)
+        self._row_targets.append(None)
         item = QTableWidgetItem(name)
         font = item.font()
         font.setBold(True)
@@ -1214,7 +1391,10 @@ class TargetsTable(QTableWidget):
     def _add_row(self, idx: int, t: Target):
         row = self.rowCount()
         self.insertRow(row)
-        self.index_to_row[idx] = row
+        uid = getattr(t, "uid", None) or uuid.uuid4().hex[:10]
+        t.uid = uid
+        self.uid_to_row[uid] = row
+        self._row_targets.append(uid)
 
         group_item = QTableWidgetItem(self._group_name(t.group_id))
         target_item = QTableWidgetItem(t.key)
@@ -1268,13 +1448,21 @@ class TargetsTable(QTableWidget):
         self.setCellWidget(row, 8, interval_widget)
         self.setCellWidget(row, 9, actions_widget)
 
+        self._register_interaction(autostart_cb)
+        self._register_interaction(interval_widget)
+        self._register_interaction(actions_widget)
+        self._register_interaction(btn_start)
+        self._register_interaction(btn_stop)
+        self._register_interaction(btn_edit)
+        self._register_interaction(btn_remove)
+
     def _on_start(self, index: int):
         self.gobbler.set_active(index, True)
-        self.refresh()
+        self.refresh(force=True)
 
     def _on_stop(self, index: int):
         self.gobbler.set_active(index, False)
-        self.refresh()
+        self.refresh(force=True)
 
     def _on_edit(self, index: int):
         if 0 <= index < len(self.config.targets):
@@ -1283,11 +1471,11 @@ class TargetsTable(QTableWidget):
             if dlg.exec() == QDialog.Accepted:
                 new_t = dlg.apply()
                 self.gobbler.update_target(index, new_t)
-                self.refresh()
+                self.refresh(force=True)
 
     def _on_remove(self, index: int):
         self.gobbler.remove_target(index)
-        self.refresh()
+        self.refresh(force=True)
 
     def _on_interval(self, index: int, val: int):
         self.gobbler.set_interval(index, val)
@@ -1296,23 +1484,28 @@ class TargetsTable(QTableWidget):
         self.gobbler.set_autostart(index, value)
 
     def update_status(self, index: int, message: str):
-        row = self.index_to_row.get(index)
+        if not (0 <= index < len(self.config.targets)):
+            return
+        target = self.config.targets[index]
+        uid = getattr(target, "uid", None)
+        if not uid:
+            return
+        row = self.uid_to_row.get(uid)
         if row is None:
             return
         status_item = self.item(row, 4)
         if status_item:
-            t = self.config.targets[index]
-            state = "Gobbling" if t.active else "Idle"
+            state = "Gobbling" if target.active else "Idle"
             status_item.setText(f"{state} — {message}")
-        if self.item(row, 5):
-            self.item(row, 5).setText(f"{self.config.targets[index].last_delta_mb:.1f}")
-        if self.item(row, 6):
-            self.item(row, 6).setText(
-                f"{self.config.targets[index].session_reclaimed_mb:.1f} / {self.config.targets[index].day_reclaimed_mb:.1f}"
-            )
-        spark: Sparkline = self.cellWidget(row, 7)
-        if spark:
-            spark.set_values(self.config.targets[index].history)
+        delta_item = self.item(row, 5)
+        if delta_item:
+            delta_item.setText(f"{target.last_delta_mb:.1f}")
+        totals_item = self.item(row, 6)
+        if totals_item:
+            totals_item.setText(f"{target.session_reclaimed_mb:.1f} / {target.day_reclaimed_mb:.1f}")
+        spark = self.cellWidget(row, 7)
+        if isinstance(spark, Sparkline):
+            spark.set_values(target.history)
 
 # --- Add Target Dialog ------------------------------------------------------
 class AddTargetDialog(QDialog):
@@ -1703,6 +1896,10 @@ class MainWindow(QMainWindow):
         self.table = QTableView(); self.table.setModel(self.proxy); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setVisible(False); self.table.setAlternatingRowColors(True)
         bl.addWidget(self.table)
+        self._process_interaction = _InteractionWatcher(self.table)
+        self._process_interaction.attach(self.table)
+        self._process_interaction.attach(self.table.viewport())
+        self._process_interaction.attach(self.table.verticalScrollBar())
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
 
         # Right: Targets with groups sidebar
@@ -1726,7 +1923,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
         # Timers
-        self.refresh_timer = QTimer(self); self.refresh_timer.timeout.connect(self._refresh_periodic); self.refresh_timer.start(2000)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._refresh_periodic)
+        self.refresh_timer.start(5000)
+        self._refresh_debounce = QTimer(self)
+        self._refresh_debounce.setSingleShot(True)
+        self._refresh_debounce.timeout.connect(self._refresh_periodic)
 
         # System tray
         self._init_tray()
@@ -1766,11 +1968,15 @@ class MainWindow(QMainWindow):
         # previously caused the view to jump back to the top and lose the
         # selected process.
         pid = self._current_pid()
-        scroll = self.table.verticalScrollBar().value()
+        bar = self.table.verticalScrollBar()
+        scroll = bar.value() if bar else 0
         self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save()
-        self.proc_model.set_include_system(self.config.show_system)
-        self.table.verticalScrollBar().setValue(scroll)
-        self._select_pid(pid)
+
+        def done():
+            self._select_pid(pid)
+            self._restore_scrollbar(bar, scroll)
+
+        self.proc_model.set_include_system(self.config.show_system, done)
 
     def _on_group_selected(self, gid: str):
         self.current_group = gid
@@ -1864,21 +2070,37 @@ class MainWindow(QMainWindow):
 
     # --- Periodic refresh ---
     def _refresh_periodic(self):
+        interaction_busy = getattr(self, "_process_interaction", None)
+        if (self.targets_table.is_busy() or (interaction_busy and interaction_busy.active)):
+            self._refresh_debounce.start(250)
+            return
+
+        bar = self.table.verticalScrollBar()
         pid = self._current_pid()
-        scroll = self.table.verticalScrollBar().value()
-        self.proc_model.refresh()
-        self.table.verticalScrollBar().setValue(scroll)
-        self._select_pid(pid)
+        proc_scroll = bar.value() if bar else 0
+
+        def done():
+            self._select_pid(pid)
+            self._restore_scrollbar(bar, proc_scroll)
+
+        self.proc_model.refresh(done)
+
+        # Targets table handles preserving its own scroll/selection state.
         self.targets_table.refresh()
+
         if self.stack.currentWidget() == self.dashboard:
             self.dashboard.refresh(self.session_reclaimed_total)
 
     def _refresh_processes(self):
         pid = self._current_pid()
-        scroll = self.table.verticalScrollBar().value()
-        self.proc_model.refresh()
-        self.table.verticalScrollBar().setValue(scroll)
-        self._select_pid(pid)
+        bar = self.table.verticalScrollBar()
+        scroll = bar.value() if bar else 0
+
+        def done():
+            self._select_pid(pid)
+            self._restore_scrollbar(bar, scroll)
+
+        self.proc_model.refresh(done)
 
     def _current_pid(self) -> Optional[int]:
         if not self.table.selectionModel():
@@ -1907,11 +2129,27 @@ class MainWindow(QMainWindow):
             except Exception:
                 continue
 
+    def _restore_scrollbar(self, bar, value: int):
+        if bar is None:
+            return
+
+        def apply():
+            bar.blockSignals(True)
+            try:
+                bar.setValue(max(bar.minimum(), min(value, bar.maximum())))
+            finally:
+                bar.blockSignals(False)
+
+        apply()
+        if hasattr(QTimer, "singleShot"):
+            QTimer.singleShot(0, apply)
+            QTimer.singleShot(120, apply)
+
     def _gobble_all(self):
         for i, t in enumerate(self.config.targets):
             if not self.current_group or t.group_id == self.current_group:
                 self.gobbler.set_active(i, True)
-        self.targets_table.refresh()
+        self.targets_table.refresh(force=True)
         scope = self._group_name(self.current_group) if self.current_group else "all targets"
         self.statusBar().showMessage(f"Gobbling started for {scope}", 3000)
 
@@ -1919,13 +2157,13 @@ class MainWindow(QMainWindow):
         for i, t in enumerate(self.config.targets):
             if not self.current_group or t.group_id == self.current_group:
                 self.gobbler.set_active(i, False)
-        self.targets_table.refresh()
+        self.targets_table.refresh(force=True)
         scope = self._group_name(self.current_group) if self.current_group else "all targets"
         self.statusBar().showMessage(f"Gobbling stopped for {scope}", 3000)
 
     def _apply_profile(self, interval_sec: int):
         for i in range(len(self.config.targets)): self.gobbler.set_interval(i, interval_sec)
-        self.targets_table.refresh(); self.statusBar().showMessage(f"Applied profile: interval {interval_sec}s to all targets", 3000)
+        self.targets_table.refresh(force=True); self.statusBar().showMessage(f"Applied profile: interval {interval_sec}s to all targets", 3000)
 
     def _export_settings(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export Settings", "ramgobbler-config.json", "JSON Files (*.json)")
@@ -1940,7 +2178,7 @@ class MainWindow(QMainWindow):
             with open(path, "r", encoding="utf-8") as f: raw = json.load(f)
             if not isinstance(raw, dict) or "targets" not in raw: raise ValueError("Invalid config file")
             self.config.save(); shutil.copy2(path, CONFIG_PATH); self.config.load()
-            self.proc_model.set_include_system(self.config.show_system); self.targets_table.refresh(); self._apply_styles(self.config.theme)
+            self.proc_model.set_include_system(self.config.show_system); self.targets_table.refresh(force=True); self._apply_styles(self.config.theme)
             self.act_light.setChecked(self.config.theme == "light"); self.act_startup.setChecked(self.config.startup_enabled or is_startup_enabled()); self.cb_show_system.setChecked(self.config.show_system)
             self._apply_hotkey(self.config.hotkey); self.statusBar().showMessage("Settings imported", 3000)
         except Exception as e: QMessageBox.warning(self, APP_NAME, f"Import failed: {e}")
@@ -1960,7 +2198,7 @@ class MainWindow(QMainWindow):
             key, match_by, interval, autostart = dlg.get_values()
             if not key: return
             self.config.targets.append(Target(key=key, match_by=match_by, interval_sec=interval, autostart=autostart))
-            self.config.save(); self.targets_table.refresh();
+            self.config.save(); self.targets_table.refresh(force=True);
             if autostart: self.gobbler.set_active(len(self.config.targets)-1, True)
 
     def _trim_selected(self):
@@ -2064,7 +2302,7 @@ class MainWindow(QMainWindow):
     def _autostart_targets(self):
         for i, t in enumerate(self.config.targets):
             if t.autostart: self.gobbler.set_active(i, True)
-        self.targets_table.refresh()
+        self.targets_table.refresh(force=True)
 
     def closeEvent(self, event):
         if self.config.tray_mode:
