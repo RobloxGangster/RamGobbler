@@ -24,18 +24,6 @@ Windows memory trimmer with a clean, friendly UI.
 pip install -r requirements.txt
 ```
 
-If `psutil` is missing, Ram Gobbler now offers a one-shot installer:
-
-```
-python ram_gobbler.py --install-psutil
-```
-
-Alternatively you can run the standalone diagnostics helper:
-
-```
-python diagnostics.py --install-psutil
-```
-
 ## Run
 ```
 python ram_gobbler.py
@@ -54,21 +42,6 @@ Available flags:
 - `--trim-visible` – trim all visible targets once
 - `--trim-group <name>` – trim a specific group once
 - `--export-metrics <path>` – write aggregated metrics JSON to the given path
-- `--check-deps` – display whether psutil is currently available
-- `--install-psutil` – install psutil and exit (same as the command above)
-- `--show-error-log` – print the crash log saved to `%APPDATA%/RamGobbler/error.log`
-- `--error-lines <n>` – number of lines to show with `--show-error-log` (default 50)
-
-### Diagnostics helper
-
-The lightweight `diagnostics.py` script runs even if dependencies are missing. It
-can install `psutil`, print dependency status, or show/clear the crash log:
-
-```
-python diagnostics.py --check-deps
-python diagnostics.py --show-error-log --lines 100
-python diagnostics.py --clear-error-log
-```
 
 ### Optional elevated helper
 Some processes can only be trimmed with Administrator rights. An auxiliary helper service can perform these trims:
@@ -91,11 +64,4 @@ pyinstaller -F -w -n "RamGobbler" ram_gobbler.py
 
 
 ### Crash log
-If the app crashes on startup, a traceback is written to
-`%APPDATA%/RamGobbler/error.log`. Use
-
-```
-python diagnostics.py --show-error-log
-```
-
-to inspect it without launching the GUI.
+If the app crashes on startup, a traceback is written to `%APPDATA%/RamGobbler/error.log`.
