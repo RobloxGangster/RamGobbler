@@ -53,239 +53,56 @@ import shutil
 import uuid
 import argparse
 import statistics
-import importlib
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
-from collections import deque, defaultdict
+from collections import deque
 from itertools import zip_longest
-from typing import Dict, List, Optional, Tuple, Deque, Callable, Set, Iterable
-import diagnostics
+from typing import Dict, List, Optional, Tuple, Deque, Callable
 from groups import group_totals
 from metrics import Metrics
 from matching import matches
 from scheduler import schedule_allows_now, jittered_interval, user_idle_seconds, gate_reason, window_active
 
-APP_NAME = "Ram Gobbler"
-CONFIG_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "RamGobbler")
-CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
-BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
-METRICS_PATH = os.path.join(CONFIG_DIR, "metrics.json")
-ERROR_LOG_PATH = os.path.join(CONFIG_DIR, "error.log")
-DEFAULT_INTERVAL = 15  # seconds
-
-
-class _MissingPsutil:
-    """Lightweight shim used when ``psutil`` cannot be imported."""
-
-    class _StubPsutilError(RuntimeError):
-        """Base class for placeholder psutil exceptions."""
-
-    class AccessDenied(_StubPsutilError):
-        """Placeholder for :class:`psutil.AccessDenied`."""
-
-    class NoSuchProcess(_StubPsutilError):
-        """Placeholder for :class:`psutil.NoSuchProcess`."""
-
-    Error = _StubPsutilError
-
-    def __init__(self, detail: Optional[str] = None) -> None:
-        self.detail = detail or ""
-
-    def _raise(self) -> None:
-        raise ModuleNotFoundError(_format_missing_psutil_message(self.detail))
-
-    def Process(self, *_args, **_kwargs):  # pragma: no cover - defensive
-        self._raise()
-
-    def process_iter(self, *_args, **_kwargs):  # pragma: no cover - defensive
-        self._raise()
-
-    def sensors_battery(self, *_args, **_kwargs):  # pragma: no cover - defensive
-        self._raise()
-
-    def virtual_memory(self, *_args, **_kwargs):  # pragma: no cover - defensive
-        self._raise()
-
-    def __getattr__(self, _name):  # pragma: no cover - defensive
-        self._raise()
-
-
-def _format_missing_psutil_message(detail: Optional[str]) -> str:
-    base = (
-        "Ram Gobbler requires the 'psutil' package, but it could not be imported "
-        "and the automatic installer failed."
-    )
-    fix = (
-        "Use `python diagnostics.py --install-psutil` or run "
-        "`pip install --user psutil` manually to continue."
-    )
-    if detail:
-        detail = detail.strip()
-        if detail:
-            return f"{base}\n\nInstaller output:\n{detail}\n\n{fix}"
-    return f"{base}\n{fix}"
-
-
-def _format_missing_pyside6_message(detail: Optional[str]) -> str:
-    base = (
-        "Ram Gobbler requires the 'PySide6' package for its graphical interface, "
-        "but it could not be imported and the automatic installer failed."
-    )
-    fix = (
-        "Use `python diagnostics.py --install-pyside6` or run "
-        "`pip install --user PySide6` manually to continue."
-    )
-    if detail:
-        detail = detail.strip()
-        if detail:
-            return f"{base}\n\nInstaller output:\n{detail}\n\n{fix}"
-    return f"{base}\n{fix}"
-
-
-def _log_dependency_error(tag: str, message: str) -> None:
-    """Persist a dependency failure to the crash log and surface a prompt."""
-
-    diagnostics.ensure_config_dir()
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        with open(ERROR_LOG_PATH, "a", encoding="utf-8") as fh:
-            fh.write(f"\n=== {tag} {timestamp} ===\n{message}\n")
-    except Exception:
-        pass
-
-    if os.name == "nt":
-        try:
-            import ctypes  # local import to avoid stubbed environments
-
-            ctypes.windll.user32.MessageBoxW(None, message, APP_NAME, 0)
-        except Exception:
-            print(message, file=sys.stderr)
-    else:
-        print(message, file=sys.stderr)
-
-
-_PSUTIL_BOOTSTRAP_ERROR: Optional[str] = None
-_PSUTIL_WARNING_EMITTED = False
-_PYSIDE6_BOOTSTRAP_ERROR: Optional[str] = None
-_PYSIDE6_WARNING_EMITTED = False
-
 try:
-    import psutil  # type: ignore
+    import psutil
 except ModuleNotFoundError:
-    diagnostics.ensure_config_dir()
-    ok, output = diagnostics.install_psutil(user=True, quiet=True)
-    if ok:
-        psutil = importlib.import_module("psutil")  # type: ignore
+    msg = (
+        "Required dependency 'psutil' is missing.\n"
+        "Install it with: pip install psutil"
+    )
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, msg, "Ram Gobbler", 0)
     else:
-        _PSUTIL_BOOTSTRAP_ERROR = output
-        psutil = _MissingPsutil(output)  # type: ignore[assignment]
-
-
-def psutil_available() -> bool:
-    """Return ``True`` when a real ``psutil`` module is available."""
-
-    return not isinstance(psutil, _MissingPsutil)
-
-
-def ensure_psutil_ready() -> bool:
-    """Emit a friendly error and return ``False`` if ``psutil`` is missing."""
-
-    global _PSUTIL_WARNING_EMITTED
-
-    if psutil_available():
-        return True
-    if _PSUTIL_WARNING_EMITTED:
-        return False
-
-    _PSUTIL_WARNING_EMITTED = True
-    message = _format_missing_psutil_message(_PSUTIL_BOOTSTRAP_ERROR)
-    _log_dependency_error("Missing psutil", message)
-    return False
-
-
-def ensure_pyside6_runtime_ready() -> bool:
-    """Ensure the PySide6 dependency is present on Windows systems."""
-
-    global _PYSIDE6_BOOTSTRAP_ERROR, _PYSIDE6_WARNING_EMITTED
-
-    if os.name != "nt":
-        return True
-
-    if diagnostics.pyside6_available():
-        _PYSIDE6_BOOTSTRAP_ERROR = None
-        return True
-
-    diagnostics.ensure_config_dir()
-    ok, output = diagnostics.install_pyside6(user=True, quiet=True)
-    if ok:
-        try:
-            importlib.invalidate_caches()
-            importlib.import_module("PySide6")
-            return True
-        except Exception as exc:  # pragma: no cover - defensive
-            _PYSIDE6_BOOTSTRAP_ERROR = str(exc)
-    else:
-        _PYSIDE6_BOOTSTRAP_ERROR = output
-
-    if not _PYSIDE6_WARNING_EMITTED:
-        _PYSIDE6_WARNING_EMITTED = True
-        message = _format_missing_pyside6_message(_PYSIDE6_BOOTSTRAP_ERROR)
-        _log_dependency_error("Missing PySide6", message)
-    return False
+        print(msg, file=sys.stderr)
+    sys.exit(1)
 
 # --- Platform check & imports ----------------------------------------------
 if os.name == "nt":
     import ctypes
     from ctypes import wintypes
     import winreg
-    try:
-        from PySide6.QtCore import (
-            Qt, QAbstractItemModel, QModelIndex, QSortFilterProxyModel,
-            QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject,
-            Signal, QItemSelectionModel, QMetaObject,
-        )
-        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
-        from PySide6.QtWidgets import (
-            QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-            QLineEdit, QTreeView, QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox,
-            QFileDialog, QMessageBox, QAbstractItemView, QSplitter, QStyle,
-            QTableWidget, QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout,
-            QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox,
-            QListWidget, QInputDialog, QStackedWidget,
-        )
-    except ModuleNotFoundError as exc:
-        if ensure_pyside6_runtime_ready():
-            from PySide6.QtCore import (
-                Qt, QAbstractItemModel, QModelIndex, QSortFilterProxyModel,
-                QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject,
-                Signal, QItemSelectionModel, QMetaObject,
-            )
-            from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
-            from PySide6.QtWidgets import (
-                QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                QLineEdit, QTreeView, QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox,
-                QFileDialog, QMessageBox, QAbstractItemView, QSplitter, QStyle,
-                QTableWidget, QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout,
-                QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox,
-                QListWidget, QInputDialog, QStackedWidget,
-            )
-        else:
-            message = _format_missing_pyside6_message(_PYSIDE6_BOOTSTRAP_ERROR)
-            raise ModuleNotFoundError(message) from exc
+    from PySide6.QtCore import (
+        Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel,
+        QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject,
+        Signal,
+    )
+    from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+        QLineEdit, QTableView, QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox,
+        QFileDialog, QMessageBox, QAbstractItemView, QSplitter, QStyle,
+        QTableWidget, QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout,
+        QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox,
+        QListWidget, QInputDialog, QStackedWidget,
+    )
 else:
     import types
     _dummy_class = type("_Dummy", (), {})
-    Qt = types.SimpleNamespace(
-        DisplayRole=0,
-        ScrollBarAsNeeded=0,
-        NoItemFlags=0,
-        ItemIsEnabled=1,
-        ItemIsSelectable=2,
-        QueuedConnection=0,
-    )
-    QAbstractItemModel = QModelIndex = QSortFilterProxyModel = QTimer = QSize = QAbstractNativeEventFilter = QRect = QEvent = QItemSelectionModel = _dummy_class
+    Qt = types.SimpleNamespace(DisplayRole=0, ScrollBarAsNeeded=0)
+    QAbstractTableModel = QModelIndex = QSortFilterProxyModel = QTimer = QSize = QAbstractNativeEventFilter = QRect = QEvent = _dummy_class
     QIcon = QAction = QKeySequence = QPainter = QPen = QObject = _dummy_class
-    QApplication = QMainWindow = QWidget = QVBoxLayout = QHBoxLayout = QGroupBox = QLineEdit = QTreeView = QPushButton = QLabel = QHeaderView = QToolBar = QSpinBox = QFileDialog = QMessageBox = QAbstractItemView = QSplitter = QStyle = QTableWidget = QTableWidgetItem = QCheckBox = QMenu = QDialog = QFormLayout = QDialogButtonBox = QSystemTrayIcon = QKeySequenceEdit = QComboBox = QListWidget = QInputDialog = QStackedWidget = _dummy_class
+    QApplication = QMainWindow = QWidget = QVBoxLayout = QHBoxLayout = QGroupBox = QLineEdit = QTableView = QPushButton = QLabel = QHeaderView = QToolBar = QSpinBox = QFileDialog = QMessageBox = QAbstractItemView = QSplitter = QStyle = QTableWidget = QTableWidgetItem = QCheckBox = QMenu = QDialog = QFormLayout = QDialogButtonBox = QSystemTrayIcon = QKeySequenceEdit = QComboBox = QListWidget = QInputDialog = QStackedWidget = _dummy_class
     QAbstractItemView.ScrollPerPixel = 0
     QAbstractItemView.SelectRows = 0
     QAbstractItemView.NoEditTriggers = 0
@@ -295,16 +112,6 @@ else:
         LPARAM=int, WPARAM=int
     )
     winreg = types.SimpleNamespace()
-
-    class _DummyMeta:
-        @staticmethod
-        def invokeMethod(obj, func, connection=None):
-            if callable(func):
-                func()
-            elif isinstance(func, str) and hasattr(obj, func):
-                getattr(obj, func)()
-            return True
-
     class _DummySignal:
         def __init__(self, *_, **__):
             self._slots = []
@@ -317,7 +124,13 @@ else:
                 slot(*args, **kwargs)
 
     Signal = _DummySignal
-    QMetaObject = _DummyMeta
+
+APP_NAME = "Ram Gobbler"
+CONFIG_DIR = os.path.join(os.getenv("APPDATA", os.path.expanduser("~")), "RamGobbler")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
+BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
+METRICS_PATH = os.path.join(CONFIG_DIR, "metrics.json")
+DEFAULT_INTERVAL = 15  # seconds
 
 # --- Win32: APIs ------------------------------------------------------------
 if os.name == "nt":
@@ -577,162 +390,9 @@ def set_startup_enabled(enabled: bool) -> Tuple[bool, str]:
 # --- Data model -------------------------------------------------------------
 @dataclass
 class Group:
-    """User-defined bucket used to color-code or organize targets."""
-
     id: str
     name: str
     color: Optional[str] = None
-
-
-@dataclass
-class ProcessEntry:
-    """Description of a single running process displayed in the UI.
-
-    The class intentionally mirrors the minimal data we need when rendering
-    child rows inside the process tree.  Keeping it tiny avoids pulling in
-    heavyweight ``psutil.Process`` objects once the snapshot has been taken.
-    """
-
-    pid: int
-    name: str
-    exe: str
-    rss_mb: float
-
-
-@dataclass
-class ProcessGroup:
-    """Aggregate of related processes shown as one expandable row.
-
-    ``ProcessTreeModel`` treats every instance as the parent entry and renders
-    ``members`` underneath it.  ``pids`` stores every process identifier that
-    belongs to the group so trimming can act on the entire bundle.
-
-    ``root_pid`` tracks the primary process for the bundle while ``root_pids``
-    stores every top-level process that acts as an entry point for the group.
-    Task Manager style apps often spawn multiple independent roots (for
-    example two ``notepad.exe`` windows); bundling them allows the user to trim
-    or add a target for the entire application with one action.
-    """
-
-    id: str
-    name: str
-    exe: str
-    root_pid: int
-    total_rss_mb: float
-    pids: List[int]
-    members: List[ProcessEntry]
-    root_pids: List[int] = field(default_factory=list)
-
-    @property
-    def primary_pid(self) -> Optional[int]:
-        """Return the most representative PID for selection convenience."""
-        return self.pids[0] if self.pids else None
-
-
-@dataclass
-class _BundleAccumulator:
-    """Internal helper that aggregates processes into a display bundle."""
-
-    key: Tuple[str, str]
-    name: str
-    exe: str
-    root_pids: Set[int] = field(default_factory=set)
-    roots: Dict[int, ProcessEntry] = field(default_factory=dict)
-    children: List[ProcessEntry] = field(default_factory=list)
-    pid_set: Set[int] = field(default_factory=set)
-    total_rss_mb: float = 0.0
-
-    def add_root(self, entry: ProcessEntry) -> None:
-        """Register a top-level process for the bundle."""
-
-        if entry.pid in self.pid_set:
-            # Another worker may have already added the root when iterating the
-            # snapshot.  Avoid double counting.
-            return
-        self.root_pids.add(entry.pid)
-        self.roots[entry.pid] = entry
-        self.pid_set.add(entry.pid)
-        self.total_rss_mb += entry.rss_mb
-
-    def add_member(self, entry: ProcessEntry) -> None:
-        """Append a non-root process to the bundle."""
-
-        if entry.pid in self.pid_set:
-            return
-        self.children.append(entry)
-        self.pid_set.add(entry.pid)
-        self.total_rss_mb += entry.rss_mb
-
-    def ensure_metadata(self, name: str, exe: str) -> None:
-        """Upgrade the display metadata when richer details become available."""
-
-        if name and (not self.name or self.name.startswith("PID ")):
-            self.name = name
-        if exe and not self.exe:
-            self.exe = exe
-
-    def build_group(self) -> ProcessGroup:
-        """Produce a :class:`ProcessGroup` ready for the Qt model."""
-
-        def _sort_key(entry: ProcessEntry) -> Tuple[float, str, int]:
-            return (-entry.rss_mb, entry.name.lower(), entry.pid)
-
-        root_entries = sorted(self.roots.values(), key=_sort_key)
-        child_entries = sorted(self.children, key=_sort_key)
-        members = root_entries + child_entries
-        ordered_root_pids = [entry.pid for entry in root_entries]
-        other_pids = [entry.pid for entry in child_entries]
-        pids = ordered_root_pids + other_pids
-        # ``root_pid`` is primarily used for restoring selection; pick the
-        # first root when available, otherwise fall back to the first member.
-        if ordered_root_pids:
-            root_pid = ordered_root_pids[0]
-        elif pids:
-            root_pid = pids[0]
-        else:
-            root_pid = 0
-        return ProcessGroup(
-            id=f"{self.key[0]}:{self.key[1]}",
-            name=self.name,
-            exe=self.exe,
-            root_pid=root_pid,
-            total_rss_mb=self.total_rss_mb,
-            pids=pids,
-            members=members,
-            root_pids=ordered_root_pids,
-        )
-
-
-def _bundle_identity(name: str, exe: str, root_pid: int) -> Tuple[Tuple[str, str], str, str]:
-    """Return a stable bundle key plus display metadata.
-
-    Parameters
-    ----------
-    name:
-        Process name reported by ``psutil``.
-    exe:
-        Absolute path to the executable when available.
-    root_pid:
-        PID used as a fallback identifier when neither ``name`` nor ``exe``
-        provide enough information.  Using the PID keeps system tasks separate
-        while still allowing user applications to be merged by executable.
-    """
-
-    clean_name = (name or "").strip()
-    exe_path = exe or ""
-    display_name = clean_name or (os.path.basename(exe_path) if exe_path else f"PID {root_pid}")
-    exe_norm = os.path.normcase(exe_path) if exe_path else ""
-
-    if clean_name in CRITICAL_NAMES or is_system_exe(exe_path):
-        key = ("pid", str(root_pid))
-    elif exe_norm:
-        key = ("exe", exe_norm)
-    elif display_name:
-        key = ("name", display_name.casefold())
-    else:
-        key = ("pid", str(root_pid))
-
-    return key, display_name, exe_path
 
 
 @dataclass
@@ -910,250 +570,40 @@ class Config:
             json.dump(raw, f, indent=2)
 
 # --- Process utilities ------------------------------------------------------
-def list_processes(include_system: bool) -> List[ProcessGroup]:
-    """Return running processes aggregated into logical groups.
-
-    Parameters
-    ----------
-    include_system:
-        When ``False`` we hide protected operating system tasks so the user
-        cannot accidentally trim them.  ``True`` shows every process.
-
-    The implementation is intentionally verbose and heavily commented so that
-    readers can follow the grouping logic step by step:
-
-    1. Capture a light-weight snapshot of every running process we care about.
-    2. Walk the parent chain for each PID to determine its top-most ancestor.
-    3. Aggregate ``ProcessEntry`` instances by that ancestor and build sorted
-       ``ProcessGroup`` objects ready for the tree view.
-    """
-
-    # Snapshot structure keyed by PID.  Each entry stores the lightweight
-    # ``ProcessEntry`` along with the parent PID so we can walk upwards later.
-    snapshot: Dict[int, Dict[str, object]] = {}
-
-    # ``psutil.process_iter`` gives us a fast iterator with most data already
-    # cached.  ``ad_value=None`` avoids surprises when an attribute is missing.
-    for proc in psutil.process_iter(attrs=["pid", "name", "exe", "memory_info", "ppid"], ad_value=None):
+def list_processes(include_system: bool) -> List[psutil.Process]:
+    procs = []
+    for p in psutil.process_iter(attrs=["pid", "name", "exe", "memory_info"]):
         try:
-            # Optionally skip protected system processes when the user has
-            # requested a cleaner view.
-            if not include_system and is_system_process(proc):
+            _ = p.info
+            if not include_system and is_system_process(p):
                 continue
-
-            info = proc.info
-
-            # ``memory_info`` may be ``None`` or raise if the process exits in
-            # the meantime; guard each access carefully.
-            mem_info = info.get("memory_info")
-            rss_mb = 0.0
-            if mem_info and hasattr(mem_info, "rss"):
-                rss_mb = float(mem_info.rss) / (1024 * 1024)
-
-            exe = info.get("exe") or ""
-            name = info.get("name") or ""
-
-            # Fall back to the executable name (or even the PID) so every row
-            # has a friendly label.
-            if not name and exe:
-                name = os.path.basename(exe) or exe
-            if not name:
-                name = f"PID {proc.pid}"
-
-            entry = ProcessEntry(pid=proc.pid, name=name, exe=exe, rss_mb=rss_mb)
-            snapshot[proc.pid] = {
-                "entry": entry,
-                "ppid": int(info.get("ppid") or 0),
-            }
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            # Processes vanish or deny access all the time; ignore and move on.
-            continue
-
-    if not snapshot:
-        return []
-
-    # ``root_cache`` lets us remember the computed ancestor for each PID so
-    # repeated lookups are constant time.
-    root_cache: Dict[int, int] = {}
-
-    def find_root(pid: int) -> int:
-        """Return the highest ancestor present in ``snapshot`` for ``pid``."""
-
-        if pid in root_cache:
-            return root_cache[pid]
-
-        chain: List[int] = []
-        current = pid
-        while True:
-            data = snapshot.get(current)
-            if not data:
-                break
-            parent = int(data.get("ppid") or 0)
-            # Stop when the parent is missing, points to itself, or would cause
-            # a loop (which can happen with short-lived processes).
-            if not parent or parent == current or parent in chain or parent not in snapshot:
-                break
-            chain.append(current)
-            current = parent
-
-        # Cache the discovered ancestor for the entire chain to avoid walking
-        # the same path multiple times.
-        root_cache[pid] = current
-        for child in chain:
-            root_cache[child] = current
-        return current
-
-    root_map: Dict[int, int] = {pid: find_root(pid) for pid in snapshot.keys()}
-
-    bundles: Dict[Tuple[str, str], _BundleAccumulator] = {}
-
-    for pid, data in snapshot.items():
-        entry: ProcessEntry = data["entry"]  # type: ignore[assignment]
-        root_pid = root_map.get(pid, pid)
-        root_data = snapshot.get(root_pid, data)
-        root_entry: ProcessEntry = root_data["entry"]  # type: ignore[assignment]
-        key, display_name, exe = _bundle_identity(root_entry.name, root_entry.exe, root_pid)
-
-        bundle = bundles.get(key)
-        if not bundle:
-            bundle = _BundleAccumulator(key=key, name=display_name, exe=exe)
-            bundles[key] = bundle
-        else:
-            bundle.ensure_metadata(display_name, exe)
-
-        if pid == root_pid:
-            bundle.add_root(entry)
-        else:
-            bundle.add_member(entry)
-            # Helpers sometimes carry richer names/paths than their root; keep
-            # the nicest metadata we encounter.
-            bundle.ensure_metadata(entry.name, entry.exe)
-
-    result: List[ProcessGroup] = []
-    for bundle in bundles.values():
-        group = bundle.build_group()
-        if group.members:
-            result.append(group)
-
-    # Present the heaviest groups at the top to mimic Task Manager.
-    result.sort(key=lambda g: (-g.total_rss_mb, g.name.lower()))
-    return result
-
-def match_pids(target: Target, include_system: bool = True) -> List[int]:
-    """Return PIDs matching ``target`` including entire process groups.
-
-    The logic mirrors :func:`list_processes` so a user selecting a grouped row
-    trims the exact same bundle.  We intentionally keep the snapshot
-    light-weight and compute parent chains with caching so repeated calls stay
-    fast even on machines with hundreds of processes.  ``include_system``
-    mirrors the process list toggle so previews and manual trims avoid pulling
-    in hidden Windows tasks when the UI filters them out.
-    """
-
-    snapshot: Dict[int, Dict[str, object]] = {}
-
-    for proc in psutil.process_iter(attrs=["pid", "name", "exe", "cmdline", "ppid"], ad_value=None):
-        try:
-            if not include_system and is_system_process(proc):
-                continue
-            info = proc.info
-            snapshot[proc.pid] = {
-                "name": info.get("name") or "",
-                "exe": info.get("exe") or "",
-                "cmdline": info.get("cmdline") or [],
-                "ppid": int(info.get("ppid") or 0),
-            }
+            procs.append(p)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+    return procs
 
-    if not snapshot:
-        return []
-
-    # Populate parent names where possible for parent-based matching.  We avoid
-    # calling into ``psutil`` unless the direct parent is missing from the
-    # snapshot because fetching from disk is comparatively slow.
-    for pid, data in snapshot.items():
-        parent_pid = int(data.get("ppid") or 0)
-        parent_name = ""
-        if parent_pid and parent_pid in snapshot:
-            parent_name = str(snapshot[parent_pid].get("name") or "")
-        elif parent_pid:
-            try:
-                parent_name = psutil.Process(parent_pid).name()
-            except Exception:
-                parent_name = ""
-        data["parent_name"] = parent_name
-
-    root_cache: Dict[int, int] = {}
-
-    def find_root(pid: int) -> int:
-        """Return the top-most ancestor of ``pid`` captured in ``snapshot``."""
-
-        if pid in root_cache:
-            return root_cache[pid]
-
-        chain: List[int] = []
-        current = pid
-        while True:
-            data = snapshot.get(current)
-            if not data:
-                break
-            parent = int(data.get("ppid") or 0)
-            if not parent or parent == current or parent in chain or parent not in snapshot:
-                break
-            chain.append(current)
-            current = parent
-
-        root_cache[pid] = current
-        for child in chain:
-            root_cache[child] = current
-        return current
-
-    root_map: Dict[int, int] = {pid: find_root(pid) for pid in snapshot.keys()}
-
-    bundle_members: Dict[Tuple[str, str], Set[int]] = defaultdict(set)
-    pid_to_bundle: Dict[int, Tuple[str, str]] = {}
-    root_keys: Dict[int, Tuple[str, str]] = {}
-
-    for pid, data in snapshot.items():
-        root_pid = root_map.get(pid, pid)
-        if root_pid not in root_keys:
-            root_info = snapshot.get(root_pid, data)
-            key, _, _ = _bundle_identity(
-                str(root_info.get("name", "")),
-                str(root_info.get("exe", "")),
-                root_pid,
-            )
-            root_keys[root_pid] = key
-        bundle_key = root_keys[root_pid]
-        bundle_members[bundle_key].add(pid)
-        pid_to_bundle[pid] = bundle_key
-
-    matched_bundles: Set[Tuple[str, str]] = set()
-
-    for pid, data in snapshot.items():
-        info = {
-            "name": data.get("name", ""),
-            "exe": data.get("exe", ""),
-            "cmdline": data.get("cmdline", []),
-            "parent": data.get("parent_name", ""),
-        }
+def match_pids(target: Target) -> List[int]:
+    pids: List[int] = []
+    for p in psutil.process_iter(attrs=["pid", "name", "exe", "cmdline", "ppid"]):
         try:
+            parent_name = ""
+            ppid = p.info.get("ppid")
+            if ppid:
+                try:
+                    parent_name = psutil.Process(ppid).name()
+                except Exception:
+                    parent_name = ""
+            info = {
+                "name": p.info.get("name"),
+                "exe": p.info.get("exe"),
+                "cmdline": p.info.get("cmdline"),
+                "parent": parent_name,
+            }
             if matches(info, target):
-                key = pid_to_bundle.get(pid)
-                if key:
-                    matched_bundles.add(key)
-        except Exception:
+                pids.append(p.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-
-    if not matched_bundles:
-        return []
-
-    result: Set[int] = set()
-    for key in matched_bundles:
-        result.update(bundle_members.get(key, set()))
-
-    return sorted(result)
+    return pids
 
 
 def estimate_reclaim(history: List[float]) -> Tuple[float, float, float]:
@@ -1462,460 +912,119 @@ class Gobbler(threading.Thread):
                 self.config.save()
 
 # --- Qt Models --------------------------------------------------------------
-class _ProcessSnapshotThread:
-    """Lightweight Python thread that captures grouped process snapshots.
-
-    The implementation intentionally avoids Qt thread primitives so we never
-    touch the GUI from outside the main thread.  The worker only keeps the
-    most recent refresh request and invokes ``deliver`` with the resulting
-    ``ProcessGroup`` list once the snapshot completes.
-    """
-
-    def __init__(self, deliver: Callable[[int, List[ProcessGroup]], None]) -> None:
-        self._deliver = deliver
-        self._pending_lock = threading.Lock()
-        self._pending_request: Optional[Tuple[int, bool]] = None
-        self._have_request = threading.Event()
-        self._stop_requested = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="ProcessSnapshotWorker",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def request_refresh(self, token: int, include_system: bool) -> None:
-        """Store a refresh request and wake the background loop."""
-
-        with self._pending_lock:
-            self._pending_request = (token, include_system)
-        self._have_request.set()
-
-    def stop(self) -> None:
-        """Ask the worker to exit and wait briefly for the thread to stop."""
-
-        self._stop_requested.set()
-        with self._pending_lock:
-            self._pending_request = None
-        self._have_request.set()
-        if self._thread.is_alive():
-            self._thread.join(timeout=1.5)
-
-    def _run(self) -> None:
-        while True:
-            self._have_request.wait()
-            if self._stop_requested.is_set():
-                break
-            with self._pending_lock:
-                request = self._pending_request
-                self._pending_request = None
-                self._have_request.clear()
-            if not request:
-                continue
-            token, include_system = request
-            try:
-                groups = list_processes(include_system)
-            except Exception:
-                groups = []
-            if self._stop_requested.is_set():
-                break
-            try:
-                self._deliver(token, groups)
-            except Exception:
-                pass
-        self._have_request.clear()
-
-
-class ProcessTreeModel(QAbstractItemModel):
-    """Hierarchical model backing the running-process tree view.
-
-    A dedicated :class:`_ProcessSnapshotThread` captures process snapshots off
-    the GUI thread and feeds results back through :attr:`snapshot_received` so
-    grouped rows are rebuilt on the Qt event loop.  Refresh requests collapse
-    into the most recent token so filters and timers never overwhelm the UI.
-    """
-
-    snapshot_received = Signal(int, object)
-
-    HEADERS = ["Name", "PID(s)", "Memory (MB)", "Path"]
+class ProcessTableModel(QAbstractTableModel):
+    COLS = ["Name", "PID", "Memory (MB)", "Path"]
+    rows_ready = Signal(object, object)
 
     def __init__(self, include_system: bool):
         super().__init__()
         self.include_system = include_system
-        self._groups: List[ProcessGroup] = []
-        self._group_index: Dict[str, int] = {}
-        self._pid_index: Dict[int, Tuple[str, int]] = {}
+        self._rows: List[Tuple[str, int, float, str]] = []
+        self._refreshing = False
         self._lock = threading.Lock()
-        self._next_token = 1
-        self._latest_token: Optional[int] = None
-        self._pending_callbacks: Dict[int, List[Callable[[], None]]] = defaultdict(list)
-        self._worker: Optional[_ProcessSnapshotThread] = None
-        self._cleanup_registered = False
-        self._shutting_down = False
-
-        self.snapshot_received.connect(self._handle_worker_snapshot)
-
-        self._initialize_worker()
-        self.refresh()
-
-    def __del__(self):
+        self._pending_refresh = False
+        self._pending_callbacks: List[Callable[[], None]] = []
         try:
-            self._shutdown_worker()
+            self.rows_ready.connect(self._apply_rows)
         except Exception:
             pass
-
-    def _initialize_worker(self) -> None:
-        if self._worker is not None:
-            return
-        try:
-            worker = _ProcessSnapshotThread(self._emit_snapshot)
-            self._worker = worker
-            app = None
-            if 'QApplication' in globals() and hasattr(QApplication, "instance"):
-                app = QApplication.instance()
-            if app and hasattr(app, "aboutToQuit"):
-                app.aboutToQuit.connect(self._shutdown_worker)
-                self._cleanup_registered = True
-        except Exception:
-            self._worker = None
-
-    def _emit_snapshot(self, token: int, groups: List[ProcessGroup]) -> None:
-        """Forward worker results onto the Qt event loop via ``snapshot_received``."""
-
-        try:
-            self.snapshot_received.emit(token, groups)
-        except Exception:
-            self._handle_worker_snapshot(token, groups)
-
-    def _shutdown_worker(self) -> None:
-        if self._shutting_down:
-            return
-        self._shutting_down = True
-        worker = self._worker
-        self._worker = None
-        if worker is not None:
-            try:
-                worker.stop()
-            except Exception:
-                pass
-        if self._cleanup_registered:
-            try:
-                if 'QApplication' in globals() and hasattr(QApplication, "instance"):
-                    app = QApplication.instance()
-                    if app and hasattr(app, "aboutToQuit"):
-                        app.aboutToQuit.disconnect(self._shutdown_worker)
-            except Exception:
-                pass
-            self._cleanup_registered = False
+        self.refresh()
 
     def set_include_system(self, val: bool, done=None):
         self.include_system = val
         self.refresh(done)
 
     def refresh(self, done=None):
-        if self._shutting_down:
-            if callable(done):
-                try:
-                    done()
-                except Exception:
-                    pass
-            return
-
         callback = done if callable(done) else None
         with self._lock:
-            token = self._next_token
-            self._next_token += 1
-            bucket = self._pending_callbacks[token]
-            if callback:
-                bucket.append(callback)
-            previous = self._latest_token
-            self._latest_token = token
-            if previous and previous != token:
-                prev_callbacks = self._pending_callbacks.pop(previous, [])
-                if prev_callbacks:
-                    bucket.extend(prev_callbacks)
-        worker = self._worker
-        if worker is not None:
-            worker.request_refresh(token, self.include_system)
-            return
-        try:
-            groups = list_processes(self.include_system)
-        except Exception:
-            groups = []
-        self._apply_snapshot(token, groups)
+            if self._refreshing:
+                if callback:
+                    self._pending_callbacks.append(callback)
+                self._pending_refresh = True
+                return
+            self._refreshing = True
+        self._start_worker(callback)
 
-    def _handle_worker_snapshot(self, token: int, groups_obj: object) -> None:
-        try:
-            groups = list(groups_obj) if groups_obj else []
-        except TypeError:
-            groups = []
-        self._apply_snapshot(token, groups)
+    def _start_worker(self, callback: Optional[Callable[[], None]]):
+        def worker():
+            rows: List[Tuple[str, int, float, str]] = []
+            try:
+                procs = list_processes(self.include_system)
+                for p in procs:
+                    name = p.info.get("name") or ""
+                    pid = p.pid
+                    rss = (p.info.get("memory_info").rss if p.info.get("memory_info") else 0) / (1024 * 1024)
+                    exe = p.info.get("exe") or ""
+                    rows.append((name, pid, rss, exe))
+            except Exception:
+                rows = []
+            rows.sort(key=lambda r: (-r[2], r[0].lower()))
 
-    def _apply_snapshot(self, token: int, groups: List[ProcessGroup]) -> None:
+            try:
+                self.rows_ready.emit(rows, callback)
+            except Exception:
+                self._apply_rows(rows, callback)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_rows(self, rows: List[Tuple[str, int, float, str]], callback: Optional[Callable[[], None]]):
         callbacks: List[Callable[[], None]] = []
+        if callback:
+            callbacks.append(callback)
         with self._lock:
-            if self._shutting_down:
-                self._pending_callbacks.pop(token, None)
-                return
-            latest = self._latest_token
-            if latest is None:
-                self._pending_callbacks.pop(token, None)
-                return
-            if token != latest:
-                stale_callbacks = self._pending_callbacks.pop(token, [])
-                if stale_callbacks:
-                    self._pending_callbacks[latest].extend(stale_callbacks)
-                return
-            callbacks = self._pending_callbacks.pop(token, [])
-            self._latest_token = None
-        self._replace_groups(groups)
+            callbacks.extend(self._pending_callbacks)
+            self._pending_callbacks.clear()
+            rerun = self._pending_refresh
+            self._pending_refresh = False
+            self._refreshing = False
+
+        if rows != self._rows:
+            self.beginResetModel()
+            self._rows = rows
+            self.endResetModel()
+        else:
+            self._rows = rows
+
         for cb in callbacks:
             try:
                 cb()
             except Exception:
                 pass
 
-    def _replace_groups(self, groups: List[ProcessGroup]):
-        """Swap ``self._groups`` and rebuild lookup tables."""
-        if groups != self._groups:
-            if hasattr(self, "beginResetModel"):
-                self.beginResetModel()
-            self._groups = groups
-            self._rebuild_indexes()
-            if hasattr(self, "endResetModel"):
-                self.endResetModel()
-        else:
-            self._groups = groups
-            self._rebuild_indexes()
-
-    def _rebuild_indexes(self):
-        self._group_index.clear()
-        self._pid_index.clear()
-        for row, group in enumerate(self._groups):
-            self._group_index[group.id] = row
-            for child_row, entry in enumerate(group.members):
-                self._pid_index[entry.pid] = (group.id, child_row)
+        if rerun:
+            self.refresh()
 
     def rowCount(self, parent=QModelIndex()):
-        if not parent.isValid():
-            return len(self._groups)
-        ptr = parent.internalPointer()
-        if not ptr:
-            return 0
-        if isinstance(ptr, tuple) and ptr and ptr[0] == "group":
-            group_idx = ptr[1]
-            if 0 <= group_idx < len(self._groups):
-                return len(self._groups[group_idx].members)
-        return 0
+        return len(self._rows)
 
     def columnCount(self, parent=QModelIndex()):
-        return len(self.HEADERS)
-
-    def index(self, row, column, parent=QModelIndex()):
-        if row < 0 or column < 0 or column >= len(self.HEADERS):
-            return QModelIndex()
-        if not parent.isValid():
-            if 0 <= row < len(self._groups):
-                return self.createIndex(row, column, ("group", row))
-            return QModelIndex()
-        ptr = parent.internalPointer()
-        if not ptr:
-            return QModelIndex()
-        if isinstance(ptr, tuple) and ptr and ptr[0] == "group":
-            group_idx = ptr[1]
-            if 0 <= group_idx < len(self._groups):
-                members = self._groups[group_idx].members
-                if 0 <= row < len(members):
-                    return self.createIndex(row, column, ("child", group_idx, row))
-        return QModelIndex()
-
-    def parent(self, index):
-        if not index.isValid():
-            return QModelIndex()
-        ptr = index.internalPointer()
-        if not ptr:
-            return QModelIndex()
-        if isinstance(ptr, tuple) and ptr:
-            if ptr[0] == "child":
-                group_idx = ptr[1]
-                if 0 <= group_idx < len(self._groups):
-                    return self.createIndex(group_idx, 0, ("group", group_idx))
-        return QModelIndex()
+        return len(self.COLS)
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role != Qt.DisplayRole:
             return None
         if orientation == Qt.Horizontal:
-            if 0 <= section < len(self.HEADERS):
-                return self.HEADERS[section]
+            return self.COLS[section]
         return section + 1
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
-        ptr = index.internalPointer()
-        if not ptr or not isinstance(ptr, tuple):
-            return None
-        column = index.column()
-        if ptr[0] == "group":
-            group_idx = ptr[1]
-            if not (0 <= group_idx < len(self._groups)):
-                return None
-            group = self._groups[group_idx]
-            if role == Qt.DisplayRole:
-                if column == 0:
-                    label = group.name
-                    count = len(group.pids)
-                    if count > 1:
-                        label = f"{label} ({count})"
-                    return label
-                if column == 1:
-                    pid_text = ""
-                    if group.pids:
-                        primary = group.primary_pid
-                        if primary is not None:
-                            extra = len(group.pids) - 1
-                            if extra > 0:
-                                pid_text = f"{primary} (+{extra})"
-                            else:
-                                pid_text = str(primary)
-                        else:
-                            pid_text = ", ".join(str(p) for p in group.pids)
-                    return pid_text
-                if column == 2:
-                    return f"{group.total_rss_mb:,.1f}"
-                if column == 3:
-                    return group.exe
-        elif ptr[0] == "child":
-            group_idx, child_row = ptr[1], ptr[2]
-            if not (0 <= group_idx < len(self._groups)):
-                return None
-            members = self._groups[group_idx].members
-            if not (0 <= child_row < len(members)):
-                return None
-            entry = members[child_row]
-            if role == Qt.DisplayRole:
-                if column == 0:
-                    return entry.name
-                if column == 1:
-                    return str(entry.pid)
-                if column == 2:
-                    return f"{entry.rss_mb:,.1f}"
-                if column == 3:
-                    return entry.exe
+        name, pid, rss, exe = self._rows[index.row()]
+        col = index.column()
+        if role == Qt.DisplayRole:
+            if col == 0:
+                return name
+            elif col == 1:
+                return str(pid)
+            elif col == 2:
+                return f"{rss:,.1f}"
+            elif col == 3:
+                return exe
         return None
 
-    def flags(self, index):
-        if not index.isValid():
-            return Qt.NoItemFlags
-        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
-
-    # --- Helpers ---------------------------------------------------------
-    def group_from_index(self, index: QModelIndex) -> Optional[ProcessGroup]:
-        if not index.isValid():
-            return None
-        ptr = index.internalPointer()
-        if not ptr or not isinstance(ptr, tuple):
-            return None
-        if ptr[0] == "group":
-            group_idx = ptr[1]
-        elif ptr[0] == "child":
-            group_idx = ptr[1]
-        else:
-            return None
-        if 0 <= group_idx < len(self._groups):
-            return self._groups[group_idx]
-        return None
-
-    def entry_from_index(self, index: QModelIndex) -> Optional[ProcessEntry]:
-        if not index.isValid():
-            return None
-        ptr = index.internalPointer()
-        if not ptr or not isinstance(ptr, tuple):
-            return None
-        if ptr[0] != "child":
-            return None
-        group_idx, child_row = ptr[1], ptr[2]
-        if 0 <= group_idx < len(self._groups):
-            members = self._groups[group_idx].members
-            if 0 <= child_row < len(members):
-                return members[child_row]
-        return None
-
-    def is_group_index(self, index: QModelIndex) -> bool:
-        if not index.isValid():
-            return False
-        ptr = index.internalPointer()
-        return bool(ptr and isinstance(ptr, tuple) and ptr[0] == "group")
-
-    def index_for_group(self, group_id: str) -> QModelIndex:
-        row = self._group_index.get(group_id)
-        if row is None:
-            return QModelIndex()
-        return self.index(row, 0, QModelIndex())
-
-    def index_for_pid(self, group_id: str, pid: int) -> QModelIndex:
-        row = self._group_index.get(group_id)
-        if row is None:
-            return QModelIndex()
-        group_index = self.index(row, 0, QModelIndex())
-        if not group_index.isValid():
-            return QModelIndex()
-        group = self._groups[row]
-        for child_row, entry in enumerate(group.members):
-            if entry.pid == pid:
-                return self.index(child_row, 0, group_index)
-        return QModelIndex()
-
-    def group_for_pid(self, pid: int) -> Optional[ProcessGroup]:
-        mapping = self._pid_index.get(pid)
-        if not mapping:
-            return None
-        group_id, _ = mapping
-        row = self._group_index.get(group_id)
-        if row is None:
-            return None
-        if 0 <= row < len(self._groups):
-            return self._groups[row]
-        return None
-class ProcessFilterProxy(QSortFilterProxyModel):
-    def __init__(self):
-        super().__init__()
-        self._needle = ""
-        self.setFilterCaseSensitivity(Qt.CaseInsensitive)
-
-    def setFilterFixedString(self, pattern: str):
-        self._needle = (pattern or "").casefold()
-        super().setFilterFixedString(pattern)
-
-    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:
-        if not self._needle:
-            return True
-        model = self.sourceModel()
-        if model is None:
-            return True
-        if self._row_matches(model, source_row, source_parent):
-            return True
-        index = model.index(source_row, 0, source_parent)
-        if not index.isValid():
-            return False
-        for row in range(model.rowCount(index)):
-            if self.filterAcceptsRow(row, index):
-                return True
-        return False
-
-    def _row_matches(self, model: QAbstractItemModel, source_row: int, source_parent: QModelIndex) -> bool:
-        columns = model.columnCount(source_parent)
-        for col in range(columns):
-            idx = model.index(source_row, col, source_parent)
-            if not idx.isValid():
-                continue
-            text = model.data(idx, Qt.DisplayRole)
-            if text is None:
-                continue
-            if self._needle in str(text).casefold():
-                return True
-        return False
+    def row_at(self, i: int) -> Tuple[str, int, float, str]:
+        return self._rows[i]
 
 # --- Sparkline widget -------------------------------------------------------
 class Sparkline(QWidget):
@@ -2421,11 +1530,10 @@ class TargetsTable(QTableWidget):
 
 # --- Add Target Dialog ------------------------------------------------------
 class AddTargetDialog(QDialog):
-    def __init__(self, key: str, match_by: str, include_system: bool, parent=None):
+    def __init__(self, key: str, match_by: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Target")
         self.setMinimumWidth(520)
-        self.include_system = include_system
         form = QFormLayout(self)
         self.le_key = QLineEdit(key)
         self.cmb_match = QComboBox()
@@ -2458,7 +1566,7 @@ class AddTargetDialog(QDialog):
             return
         t = Target(key=key, match_by=match_by)
         try:
-            count = len(match_pids(t, include_system=self.include_system))
+            count = len(match_pids(t))
         except Exception:
             count = 0
         self.lbl_preview.setText(f"Matches: {count}")
@@ -2804,11 +1912,10 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.search); search_row.addWidget(self.btn_trim_now); search_row.addWidget(self.btn_add_selected); search_row.addWidget(self.cb_show_system)
         bl.addLayout(search_row)
 
-        self.proc_model = ProcessTreeModel(include_system=self.config.show_system)
-        self.proxy = ProcessFilterProxy(); self.proxy.setSourceModel(self.proc_model)
-        self.table = QTreeView(); self.table.setModel(self.proxy); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setRootIsDecorated(True); self.table.setItemsExpandable(True); self.table.setExpandsOnDoubleClick(True); self.table.setAllColumnsShowFocus(True)
-        self.table.setUniformRowHeights(True); self.table.setAlternatingRowColors(True); self.table.header().setSectionResizeMode(QHeaderView.Stretch)
+        self.proc_model = ProcessTableModel(include_system=self.config.show_system)
+        self.proxy = QSortFilterProxyModel(); self.proxy.setSourceModel(self.proc_model); self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive); self.proxy.setFilterKeyColumn(-1)
+        self.table = QTableView(); self.table.setModel(self.proxy); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.table.verticalHeader().setVisible(False); self.table.setAlternatingRowColors(True)
         bl.addWidget(self.table)
         self._process_interaction = _InteractionWatcher(self.table)
         self._process_interaction.attach(self.table)
@@ -2881,13 +1988,13 @@ class MainWindow(QMainWindow):
         # visibility of system processes.  The underlying model refreshes which
         # previously caused the view to jump back to the top and lose the
         # selected process.
-        sel_group, sel_pid, sel_is_child = self._current_selection()
+        pid = self._current_pid()
         bar = self.table.verticalScrollBar()
         scroll = bar.value() if bar else 0
         self.config.show_system = bool(self.cb_show_system.isChecked()); self.config.save()
 
         def done():
-            self._select_group(sel_group, sel_pid, sel_is_child)
+            self._select_pid(pid)
             self._restore_scrollbar(bar, scroll)
 
         self.proc_model.set_include_system(self.config.show_system, done)
@@ -2931,9 +2038,9 @@ class MainWindow(QMainWindow):
                 QMainWindow { background: #f5f7fb; }
                 QGroupBox { color: #0b1220; border: 1px solid #d8dce6; border-radius: 12px; margin-top: 10px; }
                 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTreeView, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }
+                QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }
                 QLineEdit { border: 1px solid #cbd2e1; border-radius: 8px; padding: 8px; }
-                QTreeView, QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }
+                QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }
                 QToolBar { background: #f5f7fb; border-bottom: 1px solid #e5e9f2; }
                 QPushButton { background: #ecf1fb; color: #0b1220; border: 1px solid #d8dce6; border-radius: 10px; padding: 6px 12px; }
                 QPushButton:hover { background: #e3ebfb; }
@@ -2945,9 +2052,9 @@ class MainWindow(QMainWindow):
                 QMainWindow { background: #0f1115; }
                 QGroupBox { color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 12px; margin-top: 10px; }
                 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTreeView, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }
+                QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }
                 QLineEdit { border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
-                QTreeView, QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }
+                QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }
                 QToolBar { background: #0f1115; border-bottom: 1px solid #2a2f3a; }
                 QPushButton { background: #253042; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 10px; padding: 6px 12px; }
                 QPushButton:hover { background: #2b3a55; }
@@ -2990,11 +2097,11 @@ class MainWindow(QMainWindow):
             return
 
         bar = self.table.verticalScrollBar()
-        sel_group, sel_pid, sel_is_child = self._current_selection()
+        pid = self._current_pid()
         proc_scroll = bar.value() if bar else 0
 
         def done():
-            self._select_group(sel_group, sel_pid, sel_is_child)
+            self._select_pid(pid)
             self._restore_scrollbar(bar, proc_scroll)
 
         self.proc_model.refresh(done)
@@ -3006,66 +2113,42 @@ class MainWindow(QMainWindow):
             self.dashboard.refresh(self.session_reclaimed_total)
 
     def _refresh_processes(self):
-        sel_group, sel_pid, sel_is_child = self._current_selection()
+        pid = self._current_pid()
         bar = self.table.verticalScrollBar()
         scroll = bar.value() if bar else 0
 
         def done():
-            self._select_group(sel_group, sel_pid, sel_is_child)
+            self._select_pid(pid)
             self._restore_scrollbar(bar, scroll)
 
         self.proc_model.refresh(done)
 
-    def _current_selection(self) -> Tuple[Optional[str], Optional[int], bool]:
+    def _current_pid(self) -> Optional[int]:
         if not self.table.selectionModel():
-            return (None, None, False)
+            return None
         idx = self.table.selectionModel().currentIndex()
         if not idx.isValid():
-            return (None, None, False)
+            return None
         src = self.proxy.mapToSource(idx)
         if not src.isValid():
-            return (None, None, False)
-        group = self.proc_model.group_from_index(src)
-        if not group:
-            return (None, None, False)
-        is_child = not self.proc_model.is_group_index(src)
-        pid = None
-        if is_child:
-            entry = self.proc_model.entry_from_index(src)
-            pid = entry.pid if entry else None
-        return (group.id, pid, is_child)
+            return None
+        try:
+            return self.proc_model.row_at(src.row())[1]
+        except Exception:
+            return None
 
-    def _select_group(self, group_id: Optional[str], pid: Optional[int], is_child: bool):
-        if not group_id:
+    def _select_pid(self, pid: Optional[int]):
+        if pid is None:
             return
-        group_index = self.proc_model.index_for_group(group_id)
-        if not group_index.isValid():
-            return
-        proxy_group_index = self.proxy.mapFromSource(group_index)
-        if not proxy_group_index.isValid():
-            return
-        target_index = proxy_group_index
-        if is_child and pid is not None:
-            child_index = self.proc_model.index_for_pid(group_id, pid)
-            if child_index.isValid():
-                proxy_child_index = self.proxy.mapFromSource(child_index)
-                if proxy_child_index.isValid():
-                    self.table.expand(proxy_group_index)
-                    target_index = proxy_child_index
-        self.table.setCurrentIndex(target_index)
-
-    def _selected_group_entry(self) -> Tuple[Optional[ProcessGroup], Optional[ProcessEntry]]:
-        if not self.table.selectionModel():
-            return (None, None)
-        idx = self.table.selectionModel().currentIndex()
-        if not idx.isValid():
-            return (None, None)
-        src = self.proxy.mapToSource(idx)
-        if not src.isValid():
-            return (None, None)
-        group = self.proc_model.group_from_index(src)
-        entry = self.proc_model.entry_from_index(src)
-        return group, entry
+        for row in range(self.proc_model.rowCount()):
+            try:
+                if self.proc_model.row_at(row)[1] == pid:
+                    src_index = self.proc_model.index(row, 0)
+                    proxy_index = self.proxy.mapFromSource(src_index)
+                    self.table.selectRow(proxy_index.row())
+                    break
+            except Exception:
+                continue
 
     def _restore_scrollbar(self, bar, value: int):
         if bar is None:
@@ -3122,25 +2205,16 @@ class MainWindow(QMainWindow):
         except Exception as e: QMessageBox.warning(self, APP_NAME, f"Import failed: {e}")
 
     def _add_selected(self):
-        group, entry = self._selected_group_entry()
-        if not group:
-            QMessageBox.information(self, APP_NAME, "Select a process group first.")
-            return
-        if not group.pids:
-            QMessageBox.information(self, APP_NAME, "This group has no running processes right now.")
-            return
-        if self.config.protect_system:
-            for pid in group.pids:
-                try:
-                    if is_system_process(psutil.Process(pid)):
-                        QMessageBox.warning(self, APP_NAME, "This group includes a protected system process. It's hidden/protected by default.")
-                        return
-                except Exception:
-                    continue
-        exe = group.exe or (entry.exe if entry else "")
-        key = exe or group.name
-        match_by = "path" if exe else "name"
-        dlg = AddTargetDialog(key, match_by, self.config.show_system, self)
+        sel = self.table.selectionModel().selectedRows()
+        if not sel: QMessageBox.information(self, APP_NAME, "Select a process row first."); return
+        row = sel[0].row(); src_row = self.proxy.mapToSource(self.proxy.index(row, 0)).row()
+        name, pid, rss, exe = self.proc_model.row_at(src_row)
+        try:
+            if is_system_process(psutil.Process(pid)) and self.config.protect_system:
+                QMessageBox.warning(self, APP_NAME, "This looks like a system process. It's hidden/protected by default."); return
+        except Exception: pass
+        match_by = "path" if exe else "name"; key = exe or name
+        dlg = AddTargetDialog(key, match_by, self)
         if dlg.exec() == QDialog.Accepted:
             key, match_by, interval, autostart = dlg.get_values()
             if not key: return
@@ -3149,54 +2223,27 @@ class MainWindow(QMainWindow):
             if autostart: self.gobbler.set_active(len(self.config.targets)-1, True)
 
     def _trim_selected(self):
-        group, _ = self._selected_group_entry()
-        if not group:
-            QMessageBox.information(self, APP_NAME, "Select a process group first.")
-            return
-        if not group.pids:
-            QMessageBox.information(self, APP_NAME, "This group has no running processes right now.")
-            return
-
-        acted = 0
-        trimmed_ok = 0
-        total_delta = 0.0
-        for pid in group.pids:
-            try:
-                if self.config.protect_system and is_system_process(psutil.Process(pid)):
-                    continue
-            except Exception:
-                continue
-            acted += 1
-            before = rss_mb(pid)
-            ok = empty_working_set(pid)
-            after = rss_mb(pid)
-            if ok:
-                trimmed_ok += 1
-            if before is not None and after is not None:
-                total_delta += max(0.0, before - after)
-
-        if acted == 0:
-            QMessageBox.warning(self, APP_NAME, "Could not trim this group. The processes may be protected or inaccessible.")
-            return
-
-        if total_delta > 0:
-            self.session_reclaimed_total += total_delta
-            self._update_total_label()
-
-        if trimmed_ok > 0:
-            self.statusBar().showMessage(
-                f"Trimmed {group.name} ({trimmed_ok}/{acted} processes) −{total_delta:.1f} MB",
-                3000,
-            )
-        else:
-            QMessageBox.warning(self, APP_NAME, "Could not trim the selected group. Try running as Administrator.")
+        sel = self.table.selectionModel().selectedRows()
+        if not sel: QMessageBox.information(self, APP_NAME, "Select a process row first."); return
+        row = sel[0].row(); src_row = self.proxy.mapToSource(self.proxy.index(row, 0)).row()
+        name, pid, rss, exe = self.proc_model.row_at(src_row)
+        try:
+            if self.config.protect_system and is_system_process(psutil.Process(pid)):
+                QMessageBox.warning(self, APP_NAME, "Skipping protected system process."); return
+        except Exception: pass
+        before = rss_mb(pid); ok = empty_working_set(pid); after = rss_mb(pid)
+        delta = 0.0
+        if before is not None and after is not None:
+            delta = max(0.0, before - after); self.session_reclaimed_total += delta; self._update_total_label()
+        if ok: self.statusBar().showMessage(f"Trimmed {name} (PID {pid}) −{delta:.1f} MB", 3000)
+        else: QMessageBox.warning(self, APP_NAME, "Could not trim this process. Try running as Administrator.")
 
     def _trim_visible_targets(self):
         total_pids = 0; trimmed_ok = 0; total_delta = 0.0
         for t in self.config.targets:
             if self.current_group and t.group_id != self.current_group:
                 continue
-            pids = match_pids(t, include_system=self.config.show_system); total_pids += len(pids)
+            pids = match_pids(t); total_pids += len(pids)
             delta_t = 0.0
             if pids:
                 t.last_trim_reason = "manual"
@@ -3292,55 +2339,6 @@ class MainWindow(QMainWindow):
 # --- Entry point ------------------------------------------------------------
 def main():
     args = parse_args(sys.argv[1:])
-    if args.check_deps:
-        diagnostics.print_dependency_status()
-        return 0
-
-    if args.install_psutil:
-        diagnostics.ensure_config_dir()
-        ok, output = diagnostics.install_psutil(user=True, quiet=True)
-        print(output.strip())
-        if not ok:
-            print("psutil installation failed.", file=sys.stderr)
-            return 1
-        try:
-            globals()["psutil"] = importlib.import_module("psutil")
-        except Exception as exc:  # pragma: no cover - defensive
-            print(f"psutil installed but could not be imported: {exc}", file=sys.stderr)
-            return 1
-        print("psutil installation succeeded.")
-        return 0
-
-    if args.install_pyside6:
-        diagnostics.ensure_config_dir()
-        ok, output = diagnostics.install_pyside6(user=True, quiet=True)
-        print(output.strip())
-        if not ok:
-            print("PySide6 installation failed.", file=sys.stderr)
-            return 1
-        try:
-            importlib.invalidate_caches()
-            importlib.import_module("PySide6")
-        except Exception as exc:  # pragma: no cover - defensive
-            print(f"PySide6 installed but could not be imported: {exc}", file=sys.stderr)
-            return 1
-        print("PySide6 installation succeeded.")
-        return 0
-
-    if args.show_error_log:
-        content = diagnostics.tail_error_log(args.error_lines)
-        if content:
-            print(content)
-        else:
-            print("No error log has been recorded yet.")
-        return 0
-
-    if not ensure_psutil_ready():
-        return 1
-    if os.name == "nt" and not diagnostics.pyside6_available():
-        if not ensure_pyside6_runtime_ready():
-            return 1
-
     config = Config(CONFIG_PATH)
     config.load()
     metrics = Metrics(METRICS_PATH)
@@ -3371,16 +2369,6 @@ def parse_args(argv=None):
     parser.add_argument("--trim-visible", action="store_true", help="trim currently visible targets and exit")
     parser.add_argument("--trim-group", help="trim targets belonging to a specific group")
     parser.add_argument("--export-metrics", help="write metrics JSON to the given path")
-    parser.add_argument("--check-deps", action="store_true", help="show whether required packages are installed")
-    parser.add_argument("--install-psutil", action="store_true", help="install the psutil dependency and exit")
-    parser.add_argument("--install-pyside6", action="store_true", help="install the PySide6 dependency and exit")
-    parser.add_argument("--show-error-log", action="store_true", help="print the crash log and exit")
-    parser.add_argument(
-        "--error-lines",
-        type=int,
-        default=50,
-        help="number of lines from the end of the crash log to display",
-    )
     return parser.parse_args(argv)
 
 if __name__ == "__main__":
@@ -3390,8 +2378,8 @@ if __name__ == "__main__":
         import traceback, os
         err = traceback.format_exc()
         try:
-            diagnostics.ensure_config_dir()
-            with open(ERROR_LOG_PATH, "a", encoding="utf-8") as f:
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(os.path.join(CONFIG_DIR, "error.log"), "a", encoding="utf-8") as f:
                 f.write(
                     f"\n=== Crash {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n{err}\n"
                 )
