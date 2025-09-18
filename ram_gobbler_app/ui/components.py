@@ -1120,10 +1120,27 @@ class TargetsTable(QTableWidget):
         spark = Sparkline(target.history)
 
         interval_widget = QSpinBox()
-        interval_widget.setRange(3, 600)
+        interval_widget.setRange(1, 600)
         interval_widget.setValue(int(target.interval_sec))
         interval_widget.setToolTip("How often to gobble memory for this target")
+        metrics = interval_widget.fontMetrics()
+        try:
+            digits_width = metrics.horizontalAdvance("0000")
+        except AttributeError:  # pragma: no cover - Qt6 preferred API
+            digits_width = metrics.width("0000")  # type: ignore[attr-defined]
+        interval_widget.setMaximumWidth(digits_width + 30)
+        interval_widget.setFocusPolicy(Qt.StrongFocus)
+        if hasattr(interval_widget, "lineEdit"):
+            try:
+                line_edit = interval_widget.lineEdit()
+            except Exception:  # pragma: no cover - defensive
+                line_edit = None
+            if line_edit is not None:
+                line_edit.setReadOnly(False)
         interval_widget.valueChanged.connect(lambda val, i=idx: self._on_interval(i, val))
+        interval_widget.editingFinished.connect(
+            lambda i=idx, widget=interval_widget: self._commit_interval_widget(i, widget)
+        )
 
         actions_widget = QWidget()
         hbox = QHBoxLayout(actions_widget)
@@ -1287,6 +1304,19 @@ class TargetsTable(QTableWidget):
 
         self.gobbler.set_interval(index, val)
 
+    def _commit_interval_widget(self, index: int, widget: QSpinBox):
+        """Store manual edits that do not emit a valueChanged signal."""
+
+        if not (0 <= index < len(self.config.targets)):
+            return
+        try:
+            new_value = int(widget.value())
+        except Exception:  # pragma: no cover - defensive
+            return
+        if self.config.targets[index].interval_sec == new_value:
+            return
+        self._on_interval(index, new_value)
+
     def _on_autostart(self, index: int, value: bool):
         """Update the auto-start flag from the checkbox state."""
 
@@ -1351,7 +1381,7 @@ class AddTargetDialog(QDialog):
         if match_by in ["name", "path", "cmdline", "parent"]:
             self.cmb_match.setCurrentText(match_by)
         self.sb_interval = QSpinBox()
-        self.sb_interval.setRange(3, 600)
+        self.sb_interval.setRange(1, 600)
         self.sb_interval.setValue(DEFAULT_INTERVAL)
         self.cb_autostart = QCheckBox("Auto-start gobbling for this target")
         self.lbl_preview = QLabel("Matches: 0")

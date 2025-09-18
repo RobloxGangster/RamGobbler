@@ -147,7 +147,7 @@ class Gobbler(threading.Thread):
                 # Jitter intervals per target so their timers do not fire in lock
                 # step, then slow them down when the machine is on battery.
                 base_interval = jittered_interval(target.interval_sec, target.key, self.config.jitter_pct)
-                eff_interval = max(3, int(base_interval * batt_factor))
+                eff_interval = max(1, int(base_interval * batt_factor))
                 in_maintenance = window_active(self.config.maintenance_window, now_dt)
                 gobble_reason = "maintenance" if in_maintenance else "timer"
                 if in_maintenance and self.config.maintenance_window.get("aggressive"):
@@ -253,7 +253,7 @@ class Gobbler(threading.Thread):
 
         with self._lock:
             if 0 <= index < len(self.config.targets):
-                self.config.targets[index].interval_sec = max(3, int(seconds))
+                self.config.targets[index].interval_sec = max(1, int(seconds))
                 self.config.save()
 
     def set_autostart(self, index: int, value: bool) -> None:
