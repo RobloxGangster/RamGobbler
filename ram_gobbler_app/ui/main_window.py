@@ -150,10 +150,16 @@ class MainWindow(QMainWindow):
         self.splitter = splitter
 
         lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(0)
         box_left = QGroupBox("Running Processes")
-        lv.addWidget(box_left)
+        lv.addWidget(box_left, 1)
         bl = QVBoxLayout(box_left)
+        bl.setContentsMargins(12, 12, 12, 12)
+        bl.setSpacing(8)
         search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(8)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search by name or path…")
         self.btn_gobble_now = QPushButton("Gobble Now")
@@ -199,7 +205,7 @@ class MainWindow(QMainWindow):
                 self.table.customContextMenuRequested.connect(self._show_process_context_menu)
             except Exception:
                 pass
-        bl.addWidget(self.table)
+        bl.addWidget(self.table, 1)
         self._process_interaction = _InteractionWatcher(self.table)
         self._process_interaction.attach(self.table)
         self._process_interaction.attach(self.table.viewport())
@@ -217,9 +223,13 @@ class MainWindow(QMainWindow):
                 pass
 
         rv = QVBoxLayout(right)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
         box_right = QGroupBox("Targets")
-        rv.addWidget(box_right)
+        rv.addWidget(box_right, 1)
         br = QVBoxLayout(box_right)
+        br.setContentsMargins(12, 12, 12, 12)
+        br.setSpacing(8)
         self.targets_table = TargetsTable(self.config, self.gobbler)
         br.addWidget(self.targets_table)
 
