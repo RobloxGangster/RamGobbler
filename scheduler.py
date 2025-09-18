@@ -90,7 +90,7 @@ def window_active(
     return _within_window(window, now or datetime.now())
 
 
-def jittered_interval(interval: int, key: str, pct: int) -> int:
+def jittered_interval(interval: float, key: str, pct: int) -> float:
     """Deterministically jitter ``interval`` by ``pct`` percent.
 
     The jitter is stable for a given ``key`` so that intervals remain consistent
@@ -98,20 +98,21 @@ def jittered_interval(interval: int, key: str, pct: int) -> int:
     """
 
     if pct <= 0 or interval <= 0:
-        # Nothing to jitter; clamp to a minimum of one second.
-        return max(1, interval)
+        # Nothing to jitter; clamp to a minimum of half a second.
+        return max(0.5, float(interval))
 
     # Calculate the maximum absolute jitter based on the percentage.
-    rng = int(interval * pct / 100)
+    rng = float(interval) * pct / 100.0
     if rng <= 0:
-        return interval
+        return max(0.5, float(interval))
 
     # Derive a deterministic offset from the provided key.
     h = int(hashlib.sha1(key.encode()).hexdigest(), 16)
-    offset = (h % (2 * rng + 1)) - rng
+    span = h % 10001 / 10000.0  # Stable pseudo-random value in [0, 1].
+    offset = (span * 2.0 - 1.0) * rng
 
-    # Ensure the final interval stays positive.
-    return max(1, interval + offset)
+    # Ensure the final interval stays above the supported minimum.
+    return max(0.5, float(interval) + offset)
 
 
 def user_idle_seconds() -> int:

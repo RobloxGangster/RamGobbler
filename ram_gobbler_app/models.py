@@ -40,7 +40,7 @@ class Target:
     uid: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     group_id: str = ""
     active: bool = False
-    interval_sec: int = DEFAULT_INTERVAL
+    interval_sec: float = float(DEFAULT_INTERVAL)
     last_gobble_ts: float = 0.0
     last_result: str = ""
     autostart: bool = False
@@ -83,7 +83,7 @@ class Target:
             match_by=raw.get("match_by", "name"),
             uid=raw.get("uid") or uuid.uuid4().hex[:10],
             active=bool(raw.get("active", False)),
-            interval_sec=int(raw.get("interval_sec", DEFAULT_INTERVAL)),
+            interval_sec=float(raw.get("interval_sec", DEFAULT_INTERVAL)),
             last_gobble_ts=float(raw.get("last_gobble_ts", raw.get(LEGACY_LAST_TS_KEY, 0.0))),
             last_result=raw.get("last_result", ""),
             autostart=bool(raw.get("autostart", False)),

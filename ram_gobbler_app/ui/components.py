@@ -926,6 +926,146 @@ class _InteractionWatcher(QObject):
             self.active = False
 
 
+class IntervalEditor(QWidget):
+    """Composite widget for editing float intervals with separate controls."""
+
+    valueChanged = Signal(float)
+    editingFinished = Signal()
+
+    def __init__(
+        self,
+        value: float,
+        parent=None,
+        *,
+        minimum: float = 0.5,
+        maximum: float = 600.0,
+        step: float = 0.5,
+    ):
+        super().__init__(parent)
+        self._min = float(minimum)
+        self._max = float(maximum)
+        self._step = float(step) if step > 0 else 0.5
+        self._value = self._snap(self._clamp(value))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.line_edit = QLineEdit(self)
+        if hasattr(self, "setFocusProxy"):
+            try:
+                self.setFocusProxy(self.line_edit)
+            except Exception:  # pragma: no cover - defensive
+                pass
+        if hasattr(self.line_edit, "setAlignment") and hasattr(Qt, "AlignRight"):
+            self.line_edit.setAlignment(Qt.AlignRight)
+        layout.addWidget(self.line_edit)
+
+        btn_layout = QVBoxLayout()
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(2)
+
+        self.btn_up = QPushButton("▲", self)
+        self.btn_down = QPushButton("▼", self)
+        for btn in (self.btn_up, self.btn_down):
+            if hasattr(btn, "setAutoDefault"):
+                btn.setAutoDefault(False)
+            if hasattr(btn, "setDefault"):
+                btn.setDefault(False)
+            if hasattr(btn, "setFocusPolicy") and hasattr(Qt, "NoFocus"):
+                btn.setFocusPolicy(Qt.NoFocus)
+            if hasattr(btn, "setFixedWidth"):
+                btn.setFixedWidth(28)
+            if hasattr(btn, "setFixedHeight"):
+                btn.setFixedHeight(18)
+            btn_layout.addWidget(btn)
+
+        layout.addLayout(btn_layout)
+
+        if hasattr(self.btn_up, "clicked"):
+            self.btn_up.clicked.connect(self._on_step_up)
+        if hasattr(self.btn_down, "clicked"):
+            self.btn_down.clicked.connect(self._on_step_down)
+        if hasattr(self.line_edit, "editingFinished"):
+            self.line_edit.editingFinished.connect(self._on_edit_finished)
+
+        self._update_display()
+
+    def _clamp(self, value: float) -> float:
+        return max(self._min, min(self._max, float(value)))
+
+    def _snap(self, value: float) -> float:
+        if self._step <= 0:
+            return float(value)
+        steps = round(float(value) / self._step)
+        return steps * self._step
+
+    def _format(self, value: float) -> str:
+        rounded = round(value, 2)
+        if abs(rounded - round(rounded)) < 1e-6:
+            return str(int(round(rounded)))
+        text = f"{rounded:.1f}"
+        return text.rstrip("0").rstrip(".")
+
+    def _update_display(self) -> None:
+        text = self._format(self._value)
+        if hasattr(self.line_edit, "setText"):
+            self.line_edit.setText(text)
+
+    def set_display_width(self, width: int) -> None:
+        width = max(0, width)
+        if hasattr(self.line_edit, "setFixedWidth"):
+            self.line_edit.setFixedWidth(width)
+        extra = 36  # space for buttons and layout spacing
+        if hasattr(self, "setMinimumWidth"):
+            self.setMinimumWidth(width + extra)
+        if hasattr(self, "setMaximumWidth"):
+            self.setMaximumWidth(width + extra + 12)
+
+    def value(self) -> float:
+        return self._value
+
+    def setValue(self, value: float, *, emit: bool = False) -> None:
+        clean = self._snap(self._clamp(value))
+        changed = abs(clean - self._value) > 1e-6
+        self._value = clean
+        self._update_display()
+        if emit and changed and hasattr(self, "valueChanged"):
+            try:
+                self.valueChanged.emit(self._value)
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    def interaction_widgets(self) -> List[QWidget]:
+        """Return widgets that should pause auto-refresh when interacted with."""
+
+        return [w for w in (self, self.line_edit, self.btn_up, self.btn_down) if w]
+
+    def _on_step_up(self) -> None:
+        self.setValue(self._value + self._step, emit=True)
+
+    def _on_step_down(self) -> None:
+        self.setValue(self._value - self._step, emit=True)
+
+    def _on_edit_finished(self) -> None:
+        getter = getattr(self.line_edit, "text", None)
+        raw = getter() if callable(getter) else ""
+        if not isinstance(raw, str):
+            raw = ""
+        text = raw.strip()
+        try:
+            new_val = float(text)
+        except Exception:
+            self._update_display()
+        else:
+            self.setValue(new_val, emit=True)
+        if hasattr(self, "editingFinished"):
+            try:
+                self.editingFinished.emit()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+
 class TargetsTable(QTableWidget):
     """Central table listing configured targets and their status."""
 
@@ -1119,24 +1259,16 @@ class TargetsTable(QTableWidget):
 
         spark = Sparkline(target.history)
 
-        interval_widget = QSpinBox()
-        interval_widget.setRange(1, 600)
-        interval_widget.setValue(int(target.interval_sec))
+        interval_widget = IntervalEditor(target.interval_sec, minimum=0.5, maximum=600.0, step=0.5)
         interval_widget.setToolTip("How often to gobble memory for this target")
         metrics = interval_widget.fontMetrics()
         try:
             digits_width = metrics.horizontalAdvance("0000")
         except AttributeError:  # pragma: no cover - Qt6 preferred API
             digits_width = metrics.width("0000")  # type: ignore[attr-defined]
-        interval_widget.setMaximumWidth(digits_width + 30)
-        interval_widget.setFocusPolicy(Qt.StrongFocus)
-        if hasattr(interval_widget, "lineEdit"):
-            try:
-                line_edit = interval_widget.lineEdit()
-            except Exception:  # pragma: no cover - defensive
-                line_edit = None
-            if line_edit is not None:
-                line_edit.setReadOnly(False)
+        interval_widget.set_display_width(digits_width + 12)
+        if hasattr(interval_widget, "setFocusPolicy") and hasattr(Qt, "StrongFocus"):
+            interval_widget.setFocusPolicy(Qt.StrongFocus)
         interval_widget.valueChanged.connect(lambda val, i=idx: self._on_interval(i, val))
         interval_widget.editingFinished.connect(
             lambda i=idx, widget=interval_widget: self._commit_interval_widget(i, widget)
@@ -1179,6 +1311,9 @@ class TargetsTable(QTableWidget):
             btn_remove,
         ):
             self._register_interaction(widget)
+        if hasattr(interval_widget, "interaction_widgets"):
+            for child in interval_widget.interaction_widgets():
+                self._register_interaction(child)
 
     def contextMenuEvent(self, event):  # noqa: N802 - Qt API
         """Provide a remove action when the user right-clicks a row."""
@@ -1299,21 +1434,24 @@ class TargetsTable(QTableWidget):
         self.gobbler.remove_target(index)
         self.refresh(force=True)
 
-    def _on_interval(self, index: int, val: int):
+    def _on_interval(self, index: int, val: float):
         """Persist interval changes from the spin box."""
 
         self.gobbler.set_interval(index, val)
 
-    def _commit_interval_widget(self, index: int, widget: QSpinBox):
+    def _commit_interval_widget(self, index: int, widget):
         """Store manual edits that do not emit a valueChanged signal."""
 
         if not (0 <= index < len(self.config.targets)):
             return
         try:
-            new_value = int(widget.value())
+            if not hasattr(widget, "value"):
+                return
+            value_obj = getattr(widget, "value")
+            new_value = float(value_obj()) if callable(value_obj) else float(value_obj)
         except Exception:  # pragma: no cover - defensive
             return
-        if self.config.targets[index].interval_sec == new_value:
+        if abs(self.config.targets[index].interval_sec - new_value) < 1e-6:
             return
         self._on_interval(index, new_value)
 
@@ -1380,15 +1518,14 @@ class AddTargetDialog(QDialog):
         self.cmb_match.addItems(["name", "path", "cmdline", "parent"])
         if match_by in ["name", "path", "cmdline", "parent"]:
             self.cmb_match.setCurrentText(match_by)
-        self.sb_interval = QSpinBox()
-        self.sb_interval.setRange(1, 600)
-        self.sb_interval.setValue(DEFAULT_INTERVAL)
+        self.interval_editor = IntervalEditor(DEFAULT_INTERVAL, minimum=0.5, maximum=600.0, step=0.5)
         self.cb_autostart = QCheckBox("Auto-start gobbling for this target")
         self.lbl_preview = QLabel("Matches: 0")
         self.le_key.textChanged.connect(self._update_preview)
         self.cmb_match.currentTextChanged.connect(self._update_preview)
         form.addRow("Target pattern:", self.le_key)
         form.addRow("Match by:", self.cmb_match)
+        form.addRow("Interval (s):", self.interval_editor)
         form.addRow("Preview:", self.lbl_preview)
         if summary:
             summary_label = QLabel("\n".join(summary))
@@ -1414,13 +1551,13 @@ class AddTargetDialog(QDialog):
         pids = match_pids(preview_target)
         self.lbl_preview.setText(f"Matches: {len(pids)}")
 
-    def get_values(self) -> Tuple[str, str, int, bool, bool]:
+    def get_values(self) -> Tuple[str, str, float, bool, bool]:
         """Return the form values in a convenient tuple."""
 
         return (
             self.le_key.text().strip(),
             self.cmb_match.currentText(),
-            int(self.sb_interval.value()),
+            float(self.interval_editor.value()),
             bool(self.cb_autostart.isChecked()),
             bool(self._include_children),
         )
@@ -1660,6 +1797,7 @@ __all__ = [
     "GroupsSidebar",
     "GroupSettingsDialog",
     "RulesDialog",
+    "IntervalEditor",
     "TargetsTable",
     "AddTargetDialog",
     "SettingsDialog",
