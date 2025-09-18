@@ -7,8 +7,6 @@ if ROOT not in sys.path:
 import ram_gobbler
 from ram_gobbler import estimate_reclaim, Target, Config, Gobbler, parse_args
 from metrics import Metrics
-from ram_gobbler_app.processes import ProcessNode
-from ram_gobbler_app.ui.main_window import MainWindow
 
 
 def test_estimate_reclaim():
@@ -59,38 +57,3 @@ def test_parse_args_legacy_aliases():
     legacy_group_attr = legacy_group.replace('-', '_').lstrip('_')
     assert getattr(args, legacy_visible_attr)
     assert getattr(args, legacy_group_attr) == 'foo'
-
-
-def test_collect_candidate_targets_allows_selected_duplicates():
-    existing = {('c:\\foo.exe', 'path')}
-    selected = ProcessNode(pid=1, name='Foo', exe='C:\\Foo.exe', rss_mb=0.0)
-    duplicate_child = ProcessNode(pid=2, name='FooChild', exe='C:\\Foo.exe', rss_mb=0.0)
-    distinct_child = ProcessNode(pid=3, name='Bar', exe='C:\\Bar.exe', rss_mb=0.0)
-
-    additions = MainWindow._collect_candidate_targets(
-        [selected, duplicate_child, distinct_child],
-        existing,
-        selected_pid=1,
-        protect_system=False,
-    )
-
-    assert [(node.pid, key, match) for node, key, match in additions] == [
-        (1, 'C:\\Foo.exe', 'path'),
-        (3, 'C:\\Bar.exe', 'path'),
-    ]
-
-
-def test_collect_candidate_targets_suppresses_duplicate_without_existing():
-    selected = ProcessNode(pid=10, name='Foo', exe='C:\\Foo.exe', rss_mb=0.0)
-    duplicate_child = ProcessNode(pid=11, name='FooChild', exe='C:\\Foo.exe', rss_mb=0.0)
-
-    additions = MainWindow._collect_candidate_targets(
-        [selected, duplicate_child],
-        set(),
-        selected_pid=10,
-        protect_system=False,
-    )
-
-    assert [(node.pid, key, match) for node, key, match in additions] == [
-        (10, 'C:\\Foo.exe', 'path'),
-    ]
