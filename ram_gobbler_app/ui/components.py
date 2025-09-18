@@ -46,7 +46,6 @@ from ..platform import (
     QTableView,
     QTableWidget,
     QTableWidgetItem,
-    QToolBar,
     QVBoxLayout,
     QWidget,
     Qt,
@@ -254,19 +253,52 @@ class GroupsSidebar(QWidget):
         super().__init__(parent)
         self.config = config
         self._controller = controller
-        layout = QVBoxLayout(self)
-        self.toolbar = QToolBar()
-        self.toolbar.setIconSize(self.toolbar.iconSize())
-        layout.addWidget(self.toolbar)
-        self.list = QListWidget()
-        layout.addWidget(self.list)
-        self.toolbar.addAction("Add", self._add)
-        self.toolbar.addAction("Rename", self._rename)
-        self.toolbar.addAction("Delete", self._delete)
-        self.list.currentRowChanged.connect(self._emit_group)
-        self.refresh()
         self._suspend_emit = False
         self._current_group_id = ""
+
+        self.setObjectName("groupSettingsPanel")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        self.list = QListWidget()
+        self.list.setObjectName("groupSettingsList")
+        self.list.setSelectionMode(QListWidget.SingleSelection)
+        layout.addWidget(self.list)
+
+        buttons_bar = QWidget()
+        buttons_bar.setObjectName("groupSettingsButtons")
+        buttons_layout = QHBoxLayout(buttons_bar)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(10)
+
+        self.btn_add = QPushButton("Add")
+        self.btn_add.clicked.connect(self._add)
+        buttons_layout.addWidget(self.btn_add)
+
+        self.btn_rename = QPushButton("Rename")
+        self.btn_rename.clicked.connect(self._rename)
+        buttons_layout.addWidget(self.btn_rename)
+
+        self.btn_delete = QPushButton("Delete")
+        self.btn_delete.clicked.connect(self._delete)
+        buttons_layout.addWidget(self.btn_delete)
+
+        buttons_layout.addStretch(1)
+
+        self.btn_start = QPushButton("Start")
+        self.btn_start.clicked.connect(self._start_group)
+        buttons_layout.addWidget(self.btn_start)
+
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.clicked.connect(self._stop_group)
+        buttons_layout.addWidget(self.btn_stop)
+
+        layout.addWidget(buttons_bar)
+
+        self.list.currentRowChanged.connect(self._emit_group)
+        self.refresh()
 
     def refresh(self):
         """Populate the list widget with current groups."""
@@ -285,6 +317,8 @@ class GroupsSidebar(QWidget):
                     break
         else:
             self.list.setCurrentRow(0)
+        self._update_button_states()
+        self._apply_style()
 
     def set_current_group(self, group_id: str, suppress_emit: bool = False):
         """Programmatically select ``group_id`` in the list."""
@@ -311,6 +345,7 @@ class GroupsSidebar(QWidget):
             return
         gid = "" if row == 0 else self.config.groups[row - 1].id
         self._current_group_id = gid
+        self._update_button_states()
         if self._suspend_emit:
             return
         if self._controller and hasattr(self._controller, "_on_group_selected"):
@@ -338,6 +373,121 @@ class GroupsSidebar(QWidget):
         self.refresh()
         if self._controller and hasattr(self._controller, "targets_table"):
             self._controller.targets_table.refresh(force=True)
+
+    def _start_group(self):
+        """Activate gobbling for targets within the selected scope."""
+
+        controller = self._controller
+        if not controller or not hasattr(controller, "gobbler"):
+            return
+        gid = self.current_group_id()
+        for index, target in enumerate(controller.config.targets):
+            if not gid or target.group_id == gid:
+                controller.gobbler.set_active(index, True)
+        targets_table = getattr(controller, "targets_table", None)
+        if targets_table and hasattr(targets_table, "refresh"):
+            targets_table.refresh(force=True)
+        if gid and hasattr(controller, "_group_name"):
+            scope = controller._group_name(gid)
+        else:
+            scope = "all targets" if not gid else gid
+        status_bar = controller.statusBar() if hasattr(controller, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(f"Gobbling started for {scope}", 3000)
+
+    def _stop_group(self):
+        """Pause gobbling for targets within the selected scope."""
+
+        controller = self._controller
+        if not controller or not hasattr(controller, "gobbler"):
+            return
+        gid = self.current_group_id()
+        for index, target in enumerate(controller.config.targets):
+            if not gid or target.group_id == gid:
+                controller.gobbler.set_active(index, False)
+        targets_table = getattr(controller, "targets_table", None)
+        if targets_table and hasattr(targets_table, "refresh"):
+            targets_table.refresh(force=True)
+        if gid and hasattr(controller, "_group_name"):
+            scope = controller._group_name(gid)
+        else:
+            scope = "all targets" if not gid else gid
+        status_bar = controller.statusBar() if hasattr(controller, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(f"Gobbling stopped for {scope}", 3000)
+
+    def _update_button_states(self):
+        """Enable or disable buttons based on the current selection."""
+
+        has_group = self.list.currentRow() > 0
+        self.btn_rename.setEnabled(has_group)
+        self.btn_delete.setEnabled(has_group)
+
+    def _apply_style(self):
+        """Apply the grey modal styling requested for the mock-up."""
+
+        theme = getattr(self.config, "theme", "dark")
+        if theme == "light":
+            base_bg = "#f1f3f6"
+            list_bg = "#ffffff"
+            border = "#cdd3de"
+            button_bg = "#dfe3eb"
+            button_hover = "#d2d7e1"
+            button_press = "#c4cad6"
+            button_fg = "#1a1c20"
+        else:
+            base_bg = "#1b1f29"
+            list_bg = "#11141a"
+            border = "#2a2f3a"
+            button_bg = "#2b3a55"
+            button_hover = "#33476a"
+            button_press = "#25364f"
+            button_fg = "#eaeef8"
+
+        self.setStyleSheet(
+            """
+            QWidget#groupSettingsPanel {
+                background-color: %s;
+                border-radius: 14px;
+            }
+            QListWidget#groupSettingsList {
+                background-color: %s;
+                border: 1px solid %s;
+                border-radius: 10px;
+                padding: 6px;
+            }
+            QWidget#groupSettingsButtons {
+                background-color: %s;
+                border-top: 1px solid %s;
+                padding: 12px 0;
+            }
+            QWidget#groupSettingsButtons QPushButton {
+                background-color: %s;
+                color: %s;
+                border: 1px solid %s;
+                border-radius: 8px;
+                padding: 6px 16px;
+            }
+            QWidget#groupSettingsButtons QPushButton:hover {
+                background-color: %s;
+            }
+            QWidget#groupSettingsButtons QPushButton:pressed {
+                background-color: %s;
+            }
+            """
+            % (
+                base_bg,
+                list_bg,
+                border,
+                base_bg,
+                border,
+                button_bg,
+                button_fg,
+                border,
+                button_hover,
+                button_press,
+            )
+        )
 
     def _rename(self):
         """Allow the user to rename the selected group."""
@@ -384,7 +534,10 @@ class GroupSettingsDialog(QDialog):
         self.setMinimumWidth(360)
 
         layout = QVBoxLayout(self)
-        self.sidebar = GroupsSidebar(main_window.config, main_window, self)
+        layout.setContentsMargins(24, 24, 24, 16)
+        layout.setSpacing(16)
+
+        self.sidebar = GroupsSidebar(main_window.config, self, main_window)
         self.sidebar.set_current_group(main_window.current_group, suppress_emit=True)
         layout.addWidget(self.sidebar)
 
