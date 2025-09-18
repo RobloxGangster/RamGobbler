@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..constants import APP_NAME, CONFIG_PATH, METRICS_PATH
 from ..deps import psutil
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
         self._hotkey_registered = False
         self.current_group = ""
         self._expanded_pids: Set[int] = set()
+        self._process_gobble_tasks: Dict[Tuple[int, ...], Dict[str, object]] = {}
 
         tb = QToolBar()
         tb.setIconSize(QSize(18, 18))
@@ -189,6 +191,12 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self.table.setAlternatingRowColors(True)
+        if hasattr(self.table, "setContextMenuPolicy") and hasattr(Qt, "CustomContextMenu"):
+            try:
+                self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+                self.table.customContextMenuRequested.connect(self._show_process_context_menu)
+            except Exception:
+                pass
         bl.addWidget(self.table)
         self._process_interaction = _InteractionWatcher(self.table)
         self._process_interaction.attach(self.table)
@@ -898,30 +906,52 @@ class MainWindow(QMainWindow):
             3000,
         )
 
-    def _gobble_selected(self):
-        """Immediately gobble the highlighted process."""
+    def _process_item_summary(self, item, warn: bool) -> Optional[Tuple[List[int], str, ProcessNode, List[ProcessNode]]]:
+        """Return PID list, display label and primary node for ``item``."""
 
-        selection = self.table.selectionModel().selectedRows()
-        if not selection:
-            QMessageBox.information(self, APP_NAME, "Select a process row first.")
-            return
-        proxy_index = selection[0]
-        src_index = self.proxy.mapToSource(proxy_index)
-        item = self.proc_model.node_for_index(src_index)
-        if not item:
-            return
-        nodes = list(item.iter_nodes())
+        if item is None:
+            return None
+
+        nodes = list(item.iter_nodes()) if hasattr(item, "iter_nodes") else []
         if not nodes:
-            return
-        pids = []
+            if warn:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "No processes were found for that selection.",
+                )
+            return None
+
+        if warn and getattr(item, "node", None) and self.config.protect_system:
+            try:
+                if is_system_process(psutil.Process(item.node.pid)):
+                    QMessageBox.warning(
+                        self,
+                        APP_NAME,
+                        "This looks like a system process. It's hidden/protected by default.",
+                    )
+                    return None
+            except Exception:
+                pass
+
         seen: Set[int] = set()
-        for pid in item.all_pids():
-            if pid not in seen:
-                seen.add(pid)
-                pids.append(pid)
+        pids: List[int] = []
+        if hasattr(item, "all_pids"):
+            for pid in item.all_pids():
+                if pid not in seen:
+                    seen.add(pid)
+                    pids.append(pid)
+
         if not pids:
-            return
-        display = item.display_name()
+            if warn:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "No processes were found for that selection.",
+                )
+            return None
+
+        display = item.display_name() if hasattr(item, "display_name") else ""
         if not display:
             first_node = nodes[0]
             base_label = first_node.name or first_node.exe or f"PID {first_node.pid}"
@@ -929,10 +959,39 @@ class MainWindow(QMainWindow):
                 display = f"{base_label} and {len(nodes) - 1} more"
             else:
                 display = base_label
+
+        primary = (
+            item.node
+            if getattr(item, "node", None)
+            else max(nodes, key=lambda n: (n.aggregate_rss_mb, n.rss_mb, -n.pid))
+        )
+
+        return pids, display, primary, nodes
+
+    def _resolve_process_path(self, primary: ProcessNode, nodes: List[ProcessNode]) -> str:
+        """Return the most relevant executable path for a selection."""
+
+        if getattr(primary, "exe", ""):
+            return primary.exe
+        for node in nodes:
+            if getattr(node, "exe", ""):
+                return node.exe
+        return ""
+
+    def _perform_manual_gobble(
+        self, pids: List[int], stop_event: Optional[threading.Event] = None
+    ) -> Tuple[int, int, float, bool]:
+        """Gobble ``pids`` and return processed/skipped/MB/cancelled."""
+
         reclaimed = 0.0
         processed = 0
         skipped = 0
+        cancelled = False
+
         for pid in pids:
+            if stop_event and stop_event.is_set():
+                cancelled = True
+                break
             try:
                 if self.config.protect_system and is_system_process(psutil.Process(pid)):
                     skipped += 1
@@ -946,9 +1005,44 @@ class MainWindow(QMainWindow):
                 processed += 1
             if before is not None and after is not None:
                 reclaimed += max(0.0, before - after)
+
+        if stop_event and stop_event.is_set():
+            cancelled = True
+
+        return processed, skipped, reclaimed, cancelled
+
+    def _handle_manual_gobble_result(
+        self,
+        display: str,
+        processed: int,
+        skipped: int,
+        reclaimed: float,
+        *,
+        aborted: bool = False,
+    ) -> None:
+        """Update UI elements after a manual gobble completes."""
+
+        if aborted:
+            details: List[str] = []
+            if processed > 0:
+                plural = "processes" if processed != 1 else "process"
+                details.append(f"{processed} {plural}")
+            if reclaimed > 0:
+                self.session_reclaimed_total += reclaimed
+                self._update_total_label()
+                details.append(f"−{reclaimed:.1f} MB")
+            message = f"Stopped gobbling {display}"
+            if details:
+                message += f" ({', '.join(details)})"
+            if skipped:
+                message += f" ({skipped} protected skipped)"
+            self.statusBar().showMessage(message, 3000)
+            return
+
         if reclaimed > 0:
             self.session_reclaimed_total += reclaimed
             self._update_total_label()
+
         if processed == 0:
             if skipped:
                 QMessageBox.information(
@@ -963,11 +1057,147 @@ class MainWindow(QMainWindow):
                     "Could not gobble any process in this group. Try running as Administrator.",
                 )
             return
+
         plural = "processes" if processed > 1 else "process"
         msg = f"Gobbled {display} ({processed} {plural}) −{reclaimed:.1f} MB"
         if skipped:
             msg += f" ({skipped} protected skipped)"
         self.statusBar().showMessage(msg, 3000)
+
+    def _gobble_selected(self):
+        """Immediately gobble the highlighted process."""
+
+        selection = self.table.selectionModel().selectedRows()
+        if not selection:
+            QMessageBox.information(self, APP_NAME, "Select a process row first.")
+            return
+        proxy_index = selection[0]
+        src_index = self.proxy.mapToSource(proxy_index)
+        item = self.proc_model.node_for_index(src_index)
+        summary = self._process_item_summary(item, warn=True)
+        if not summary:
+            return
+        pids, display, _primary, _nodes = summary
+        processed, skipped, reclaimed, _cancelled = self._perform_manual_gobble(pids)
+        self._handle_manual_gobble_result(display, processed, skipped, reclaimed)
+
+    def _show_process_context_menu(self, pos) -> None:
+        """Display a context menu for process tree items."""
+
+        index_at = getattr(self.table, "indexAt", None)
+        if index_at is None:
+            return
+        index = index_at(pos)
+        if not index.isValid():
+            return
+        src_index = self.proxy.mapToSource(index)
+        item = self.proc_model.node_for_index(src_index)
+        summary = self._process_item_summary(item, warn=False)
+        if not summary:
+            return
+        pids, display, primary, nodes = summary
+        if not pids:
+            return
+        key = tuple(sorted(pids))
+        menu = QMenu(self)
+        active = key in self._process_gobble_tasks
+        toggle_label = "Stop Gobbling" if active else "Gobble Process"
+        act_toggle = menu.addAction(toggle_label)
+        path = self._resolve_process_path(primary, nodes)
+        act_copy = menu.addAction("Copy File Path") if path else None
+        exec_fn = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
+        viewport = getattr(self.table, "viewport", None)
+        global_pos = viewport().mapToGlobal(pos) if callable(viewport) else self.mapToGlobal(pos)
+        chosen = exec_fn(global_pos) if exec_fn else None
+        if chosen == act_toggle:
+            if active:
+                self._stop_process_gobble(key)
+            else:
+                self._start_process_gobble(item)
+        elif act_copy is not None and chosen == act_copy and path:
+            self._copy_process_path(path, display)
+
+    def _start_process_gobble(self, item) -> None:
+        """Kick off a background gobble for ``item``."""
+
+        summary = self._process_item_summary(item, warn=True)
+        if not summary:
+            return
+        pids, display, _primary, _nodes = summary
+        if not pids:
+            return
+        key = tuple(sorted(pids))
+        if key in self._process_gobble_tasks:
+            return
+
+        stop_event = threading.Event()
+        self._process_gobble_tasks[key] = {"event": stop_event, "display": display}
+
+        def worker():
+            processed = skipped = 0
+            reclaimed = 0.0
+            cancelled = False
+            try:
+                processed, skipped, reclaimed, cancelled = self._perform_manual_gobble(
+                    pids, stop_event
+                )
+            finally:
+                def finish():
+                    self._process_gobble_tasks.pop(key, None)
+                    self._handle_manual_gobble_result(
+                        display, processed, skipped, reclaimed, aborted=cancelled
+                    )
+
+                QTimer.singleShot(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _stop_process_gobble(self, key: Tuple[int, ...]) -> None:
+        """Request cancellation of an in-flight manual gobble."""
+
+        task = self._process_gobble_tasks.get(key)
+        if not task:
+            return
+        event = task.get("event")
+        if isinstance(event, threading.Event):
+            event.set()
+
+    def _copy_process_path(self, path: str, display: str) -> None:
+        """Copy ``path`` to the clipboard and notify the user."""
+
+        if not path:
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "That process does not expose a file path to copy.",
+            )
+            return
+
+        getter = getattr(QApplication, "clipboard", None)
+        clipboard = None
+        if callable(getter):
+            try:
+                clipboard = getter()
+            except Exception:
+                clipboard = None
+        copied = False
+        if clipboard is not None and hasattr(clipboard, "setText"):
+            try:
+                clipboard.setText(path)
+                copied = True
+            except Exception:
+                copied = False
+        if copied:
+            self.statusBar().showMessage(
+                f"Copied path for {display} to the clipboard",
+                3000,
+            )
+        else:
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "Unable to access the clipboard on this platform.",
+            )
 
     def _gobble_visible_targets(self):
         """Manually gobble all targets that currently match their rules."""
