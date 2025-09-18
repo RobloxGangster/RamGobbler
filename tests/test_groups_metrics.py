@@ -7,7 +7,7 @@ from dataclasses import dataclass
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from groups import filter_targets_by_group, group_totals
-from metrics import Metrics
+from metrics import Metrics, LEGACY_COUNT_KEY, LEGACY_BY_STRATEGY_COUNT_KEY
 
 
 @dataclass
@@ -40,12 +40,34 @@ def test_metrics_rollup_and_export(tmp_path):
     old = (datetime.now() - timedelta(days=2)).timestamp()
     m.add_event(old, 1.0, "timer", "standard")
     day_json = json.loads(m.export_json(1))
-    assert day_json["trims"] == 2
+    assert day_json["gobbles"] == 2
     assert abs(day_json["reclaimed_mb"] - 8.0) < 0.01
     csv_lines = m.export_csv(1).splitlines()
-    assert csv_lines[0] == "trims,reclaimed_mb"
+    assert csv_lines[0] == "gobbles,reclaimed_mb"
     assert csv_lines[1].startswith("2,8.0") or csv_lines[1].startswith("2,8")
     month_json = json.loads(m.export_json(30))
-    assert month_json["trims"] == 3
+    assert month_json["gobbles"] == 3
     assert abs(month_json["reclaimed_mb"] - 9.0) < 0.01
+
+
+def test_metrics_legacy_load(tmp_path):
+    today = datetime.now().strftime('%Y-%m-%d')
+    payload = {
+        "rollups": {
+            today: {
+                LEGACY_COUNT_KEY: 2,
+                "reclaimed_mb": 4.0,
+                LEGACY_BY_STRATEGY_COUNT_KEY: {"standard": 2},
+                "by_strategy": {"standard": 4.0},
+                "by_reason": {"timer": 4.0},
+            }
+        }
+    }
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(payload))
+    metrics = Metrics(str(path))
+    metrics.load()
+    data = json.loads(metrics.export_json(7))
+    assert data["gobbles"] == 2
+    assert data["by_strategy_gobbles"]["standard"] == 2
 

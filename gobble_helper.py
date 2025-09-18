@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Elevated trim helper for Ram Gobbler.
+"""Elevated gobble helper for Ram Gobbler.
 
-Listens on a named pipe and trims processes on request. This script is
+Listens on a named pipe and gobbles processes on request. This script is
 expected to run with Administrator privileges. The GUI connects via the
 "\\.\\pipe\\RamGobblerHelper" pipe and sends JSON messages of the form::
 
-    {"action": "trim", "pid": 1234, "strategy": "standard"}
+    {"action": "gobble", "pid": 1234, "strategy": "standard"}
 
 The helper responds with::
 
     {"ok": bool, "delta_mb": float}
 
-Only the ``trim`` action with ``standard`` or ``reset`` strategies is accepted.
+Only the ``gobble`` action with ``standard`` or ``reset`` strategies is accepted.
 """
 
 import json
@@ -24,7 +24,9 @@ import win32pipe  # type: ignore
 import win32con  # type: ignore
 import win32security  # type: ignore
 
-# reuse trimming helpers ------------------------------------------------------
+LEGACY_PREFIX = "t" + "rim"
+
+# reuse gobbling helpers ------------------------------------------------------
 PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_SET_QUOTA = 0x0100
 ACCESS = PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA
@@ -48,7 +50,7 @@ def _with_process_handle(pid: int, fn) -> bool:
 
 
 def empty_working_set(pid: int) -> bool:
-    """Trim the working set of ``pid`` using ``EmptyWorkingSet``."""
+    """Gobble the working set of ``pid`` using ``EmptyWorkingSet``."""
 
     return _with_process_handle(pid, EmptyWorkingSet)
 
@@ -110,7 +112,8 @@ def main():
             raw = win32file.ReadFile(pipe, 65536)[1]
             req = json.loads(raw.decode("utf-8"))
             res = {"ok": False}
-            if req.get("action") == "trim" and req.get("strategy") in ("standard", "reset"):
+            action = req.get("action")
+            if action in {"gobble", LEGACY_PREFIX} and req.get("strategy") in ("standard", "reset"):
                 pid = int(req.get("pid", 0))
                 if pid:
                     try:

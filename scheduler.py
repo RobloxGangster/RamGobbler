@@ -1,4 +1,4 @@
-"""Time and schedule helpers used by the trimming logic."""
+"""Time and schedule helpers used by the gobbling logic."""
 
 import hashlib
 import ctypes
@@ -84,7 +84,7 @@ def window_active(
     """
 
     if not window:
-        # Absence of a window means trimming is inactive.
+        # Absence of a window means gobbling is inactive.
         return False
 
     return _within_window(window, now or datetime.now())
@@ -139,13 +139,13 @@ def user_idle_seconds() -> int:
 
 
 def gate_reason(config, target, now: Optional[datetime] = None) -> str:
-    """Return a string explaining why trimming should be skipped.
+    """Return a string explaining why gobbling should be skipped.
 
-    An empty string means trimming is allowed.
+    An empty string means gobbling is allowed.
     """
 
     if not schedule_allows_now(getattr(target, "schedule", None), now):
-        # Target's schedule does not permit trimming at this time.
+        # Target's schedule does not permit gobbling at this time.
         return "Blocked (Schedule)"
 
     idle_sec = getattr(config, "idle_seconds", 0)
@@ -156,7 +156,7 @@ def gate_reason(config, target, now: Optional[datetime] = None) -> str:
             return "Idle unmet"
 
     if getattr(config, "metered", False):
-        # Skip trimming on metered connections unless explicitly allowed.
+        # Skip gobbling on metered connections unless explicitly allowed.
         return "Metered"
 
     return ""
