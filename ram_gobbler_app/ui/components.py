@@ -1548,33 +1548,70 @@ class AddTargetDialog(QDialog):
 
     def __init__(
         self,
+        config: Config,
         key: str,
         match_by: str,
         parent=None,
         *,
         summary: Optional[List[str]] = None,
         include_children: bool = False,
+        group_id: str = "",
     ):
         """Pre-fill the dialog with sensible defaults for ``key`` and mode."""
 
         super().__init__(parent)
         self.setWindowTitle("Add Target")
         self.setMinimumWidth(520)
+        self._config = config
         self._include_children = bool(include_children)
+        self._initial_group = group_id or ""
+
         form = QFormLayout(self)
         self.le_key = QLineEdit(key)
         self.cmb_match = QComboBox()
         self.cmb_match.addItems(["name", "path", "cmdline", "parent"])
         if match_by in ["name", "path", "cmdline", "parent"]:
             self.cmb_match.setCurrentText(match_by)
+
+        self.cmb_group = QComboBox()
+        if hasattr(self.cmb_group, "setEditable"):
+            self.cmb_group.setEditable(False)
+        if hasattr(self.cmb_group, "setToolTip"):
+            self.cmb_group.setToolTip("Assign the new target to a group")
+        if hasattr(self.cmb_group, "setSizeAdjustPolicy") and hasattr(QComboBox, "AdjustToContents"):
+            self.cmb_group.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._populate_groups(self._initial_group)
+
         self.interval_editor = IntervalEditor(DEFAULT_INTERVAL, minimum=0.5, maximum=600.0, step=0.5)
         self.cb_autostart = QCheckBox("Auto-start gobbling for this target")
+
+        self.sb_cpu = QSpinBox()
+        self.sb_cpu.setRange(0, 100)
+        self.sb_cpu.setValue(60)
+        self.cb_adaptive = QCheckBox("Adaptive interval")
+        self.cb_adaptive.setChecked(True)
+        self.cb_bg = QCheckBox("Gobble only when target is in background")
+        self.cb_bg.setChecked(False)
+        self.cb_full = QCheckBox("Pause while any app is fullscreen")
+        self.cb_full.setChecked(True)
+        self.cb_strategy = QComboBox()
+        self.cb_strategy.addItems(["standard", "reset"])
+        self.cb_strategy.setCurrentText("standard")
+
         self.lbl_preview = QLabel("Matches: 0")
         self.le_key.textChanged.connect(self._update_preview)
         self.cmb_match.currentTextChanged.connect(self._update_preview)
+
         form.addRow("Target pattern:", self.le_key)
         form.addRow("Match by:", self.cmb_match)
+        form.addRow("Group:", self.cmb_group)
         form.addRow("Interval (s):", self.interval_editor)
+        form.addRow("Auto-start:", self.cb_autostart)
+        form.addRow("CPU skip threshold (%):", self.sb_cpu)
+        form.addRow("Interval strategy:", self.cb_adaptive)
+        form.addRow("Background-only:", self.cb_bg)
+        form.addRow("Pause if fullscreen:", self.cb_full)
+        form.addRow("Gobble method:", self.cb_strategy)
         form.addRow("Preview:", self.lbl_preview)
         if summary:
             summary_label = QLabel("\n".join(summary))
@@ -1588,6 +1625,47 @@ class AddTargetDialog(QDialog):
 
         self._update_preview()
 
+    def _populate_groups(self, current_gid: str):
+        """Populate the group combo-box with available groups."""
+
+        widget = self.cmb_group
+        if widget is None:
+            return
+        block_signals = getattr(widget, "blockSignals", None)
+        if callable(block_signals):
+            block_signals(True)
+        try:
+            if hasattr(widget, "clear"):
+                widget.clear()
+            add_item = getattr(widget, "addItem", None)
+            if callable(add_item):
+                add_item("Ungrouped", "")
+                for grp in getattr(self._config, "groups", []):
+                    add_item(grp.name, grp.id)
+            gid = current_gid or ""
+            find_data = getattr(widget, "findData", None)
+            index = find_data(gid) if callable(find_data) else -1
+            if index < 0 and gid:
+                if callable(add_item):
+                    add_item(self._group_name(gid), gid)
+                    index = find_data(gid) if callable(find_data) else -1
+            if index < 0:
+                index = 0
+            set_current = getattr(widget, "setCurrentIndex", None)
+            if callable(set_current):
+                set_current(index)
+        finally:
+            if callable(block_signals):
+                block_signals(False)
+
+    def _group_name(self, gid: str) -> str:
+        """Return the friendly name for ``gid`` if known."""
+
+        for grp in getattr(self._config, "groups", []):
+            if grp.id == gid:
+                return grp.name
+        return gid or "Ungrouped"
+
     def _update_preview(self):
         """Show how many processes currently match the entered pattern."""
 
@@ -1600,15 +1678,34 @@ class AddTargetDialog(QDialog):
         pids = match_pids(preview_target)
         self.lbl_preview.setText(f"Matches: {len(pids)}")
 
-    def get_values(self) -> Tuple[str, str, float, bool, bool]:
-        """Return the form values in a convenient tuple."""
+    def get_target(self) -> Target:
+        """Construct a new :class:`Target` instance from the dialog fields."""
 
+        key = self.le_key.text().strip()
+        match_by = self.cmb_match.currentText()
+        target = Target(key=key, match_by=match_by, include_children=bool(self._include_children))
+        target.interval_sec = float(self.interval_editor.value())
+        target.autostart = bool(self.cb_autostart.isChecked())
+        target.cpu_skip_threshold = int(self.sb_cpu.value())
+        target.adaptive = bool(self.cb_adaptive.isChecked())
+        target.background_only = bool(self.cb_bg.isChecked())
+        target.pause_if_fullscreen = bool(self.cb_full.isChecked())
+        target.strategy = self.cb_strategy.currentText()
+        current_index = self.cmb_group.currentIndex() if hasattr(self.cmb_group, "currentIndex") else 0
+        gid = self.cmb_group.itemData(current_index) if hasattr(self.cmb_group, "itemData") else ""
+        target.group_id = gid or ""
+        return target
+
+    def get_values(self) -> Tuple[str, str, float, bool, bool]:
+        """Return legacy tuple values for compatibility with older callers."""
+
+        target = self.get_target()
         return (
-            self.le_key.text().strip(),
-            self.cmb_match.currentText(),
-            float(self.interval_editor.value()),
-            bool(self.cb_autostart.isChecked()),
-            bool(self._include_children),
+            target.key,
+            target.match_by,
+            float(target.interval_sec),
+            bool(target.autostart),
+            bool(target.include_children),
         )
 
 

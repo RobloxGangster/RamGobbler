@@ -12,7 +12,7 @@ from ..deps import psutil
 from ..gobbler import Gobbler
 from ..helpers import empty_working_set, rss_mb
 from ..hotkeys import WinEventFilter, parse_hotkey_string
-from ..models import Config, Target
+from ..models import Config
 from ..platform import (
     QAction,
     QApplication,
@@ -987,20 +987,24 @@ class MainWindow(QMainWindow):
             summary_lines.append(f"…and {remaining} more")
 
         dialog = AddTargetDialog(
+            self.config,
             key_default,
             match_default,
             self,
             summary=summary_lines or None,
             include_children=include_children_default,
+            group_id=self.current_group or "",
         )
         if dialog.exec() != QDialog.Accepted:
             return
 
-        key, match_by, interval, autostart, include_children = dialog.get_values()
-        key = key.strip()
+        target = dialog.get_target()
+        key = target.key.strip()
         if not key:
             return
 
+        target.key = key
+        match_by = target.match_by
         canonical = (key.casefold(), match_by)
         existing = {(t.key.casefold(), t.match_by) for t in self.config.targets}
         if canonical in existing:
@@ -1011,22 +1015,12 @@ class MainWindow(QMainWindow):
             )
             return
 
-        target = Target(
-            key=key,
-            match_by=match_by,
-            interval_sec=interval,
-            autostart=autostart,
-            include_children=bool(include_children),
-        )
-        if self.current_group:
-            target.group_id = self.current_group
-
         self.config.targets.append(target)
         new_index = len(self.config.targets) - 1
         self.config.save()
         self.targets_table.refresh(force=True)
 
-        if autostart:
+        if target.autostart:
             self.gobbler.set_active(new_index, True)
 
         label = item.display_name() or _describe(primary_node)
