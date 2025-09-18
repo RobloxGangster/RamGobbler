@@ -147,11 +147,11 @@ class Gobbler(threading.Thread):
                 # Jitter intervals per target so their timers do not fire in lock
                 # step, then slow them down when the machine is on battery.
                 base_interval = jittered_interval(target.interval_sec, target.key, self.config.jitter_pct)
-                eff_interval = max(1, int(base_interval * batt_factor))
+                eff_interval = max(0.5, base_interval * batt_factor)
                 in_maintenance = window_active(self.config.maintenance_window, now_dt)
                 gobble_reason = "maintenance" if in_maintenance else "timer"
                 if in_maintenance and self.config.maintenance_window.get("aggressive"):
-                    eff_interval = min(eff_interval, 8)
+                    eff_interval = min(eff_interval, 8.0)
                 if now_ts - target.last_gobble_ts < eff_interval:
                     continue
                 ok_cool, reason_cool = self._check_cooldown_and_cap(target, now_ts)
@@ -248,12 +248,12 @@ class Gobbler(threading.Thread):
                         self._forced_uids.add(uid)
                 self._manual_requests.append(index)
 
-    def set_interval(self, index: int, seconds: int) -> None:
+    def set_interval(self, index: int, seconds: float) -> None:
         """Change the per-target polling interval."""
 
         with self._lock:
             if 0 <= index < len(self.config.targets):
-                self.config.targets[index].interval_sec = max(1, int(seconds))
+                self.config.targets[index].interval_sec = max(0.5, float(seconds))
                 self.config.save()
 
     def set_autostart(self, index: int, value: bool) -> None:
@@ -383,9 +383,9 @@ class Gobbler(threading.Thread):
                 if real_target.adaptive:
                     growth = max(0.0, total_rss - real_target.last_total_rss_mb)
                     if total_delta >= 50.0 or growth >= 100.0:
-                        real_target.interval_sec = max(5, real_target.interval_sec - 2)
+                        real_target.interval_sec = max(5.0, real_target.interval_sec - 2.0)
                     elif total_delta < 5.0:
-                        real_target.interval_sec = min(60, real_target.interval_sec + 2)
+                        real_target.interval_sec = min(60.0, real_target.interval_sec + 2.0)
                     real_target.last_total_rss_mb = total_rss
             except IndexError:
                 real_target = None
