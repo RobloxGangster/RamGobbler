@@ -12,12 +12,18 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from ..constants import DEFAULT_INTERVAL
 from ..helpers import empty_working_set, rss_mb
 from ..models import Config, Group, Target
-from ..processes import estimate_reclaim, list_processes, match_pids
+from ..processes import (
+    ProcessNode,
+    build_process_tree,
+    estimate_reclaim,
+    list_processes,
+    match_pids,
+)
 from ..system import is_system_process
 from ..platform import (
     QAction,
@@ -49,6 +55,7 @@ from ..platform import (
     QVBoxLayout,
     QWidget,
     Qt,
+    QAbstractItemModel,
     QAbstractItemView,
     QAbstractTableModel,
     QSortFilterProxyModel,
@@ -203,6 +210,273 @@ class ProcessTableModel(QAbstractTableModel):
 
         return self._rows[row_index]
 
+
+class ProcessTreeItem:
+    """Internal helper representing a node in :class:`ProcessTreeModel`."""
+
+    def __init__(
+        self,
+        node: Optional[ProcessNode] = None,
+        parent: Optional["ProcessTreeItem"] = None,
+    ) -> None:
+        self.node = node
+        self.parent = parent
+        self.children: List["ProcessTreeItem"] = []
+        if node:
+            for child in node.children:
+                self.children.append(ProcessTreeItem(child, self))
+
+    def child(self, row: int) -> Optional["ProcessTreeItem"]:
+        if 0 <= row < len(self.children):
+            return self.children[row]
+        return None
+
+    def child_count(self) -> int:
+        return len(self.children)
+
+    def row(self) -> int:
+        if not self.parent:
+            return 0
+        try:
+            return self.parent.children.index(self)
+        except ValueError:
+            return 0
+
+    def display_name(self) -> str:
+        if not self.node:
+            return ""
+        if self.node.name:
+            return self.node.name
+        if self.node.exe:
+            return self.node.exe
+        return f"PID {self.node.pid}"
+
+    def all_pids(self) -> List[int]:
+        if not self.node:
+            return []
+        return list(self.node.descendant_pids)
+
+    def iter_nodes(self) -> Iterable[ProcessNode]:
+        if not self.node:
+            return []
+        return self.node.walk()
+
+
+class ProcessTreeModel(QAbstractItemModel):
+    """Hierarchical process model mirroring Task Manager's grouped view."""
+
+    COLS = ["Process", "Memory (MB)", "PID", "Path"]
+    nodes_ready = Signal(object, object)
+
+    def __init__(self, include_system: bool):
+        super().__init__()
+        self.include_system = include_system
+        self._root = ProcessTreeItem()
+        self._items_by_pid: Dict[int, ProcessTreeItem] = {}
+        self._refreshing = False
+        self._pending_refresh = False
+        self._lock = threading.Lock()
+        self._pending_callbacks: List[Callable[[], None]] = []
+        if hasattr(self, "nodes_ready") and callable(getattr(self.nodes_ready, "connect", None)):
+            try:
+                self.nodes_ready.connect(self._apply_nodes)
+            except Exception:
+                pass
+        self.refresh()
+
+    def set_include_system(self, val: bool, done=None):
+        self.include_system = val
+        self.refresh(done)
+
+    def refresh(self, done=None):
+        callback = done if callable(done) else None
+        with self._lock:
+            if self._refreshing:
+                if callback:
+                    self._pending_callbacks.append(callback)
+                self._pending_refresh = True
+                return
+            self._refreshing = True
+        self._start_worker(callback)
+
+    def _start_worker(self, callback: Optional[Callable[[], None]]):
+        def worker():
+            try:
+                nodes = build_process_tree(self.include_system)
+            except Exception:
+                nodes = []
+            try:
+                if hasattr(self, "nodes_ready"):
+                    self.nodes_ready.emit(nodes, callback)  # type: ignore[attr-defined]
+                else:
+                    self._apply_nodes(nodes, callback)
+            except Exception:
+                self._apply_nodes(nodes, callback)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_nodes(self, nodes: List[ProcessNode], callback: Optional[Callable[[], None]]):
+        callbacks: List[Callable[[], None]] = []
+        if callback:
+            callbacks.append(callback)
+        with self._lock:
+            callbacks.extend(self._pending_callbacks)
+            self._pending_callbacks.clear()
+            rerun = self._pending_refresh
+            self._pending_refresh = False
+            self._refreshing = False
+
+        new_root = ProcessTreeItem()
+        for node in nodes:
+            new_root.children.append(ProcessTreeItem(node, new_root))
+
+        self.beginResetModel()
+        self._root = new_root
+        self._rebuild_cache()
+        self.endResetModel()
+
+        for cb in callbacks:
+            try:
+                cb()
+            except Exception:
+                continue
+
+        if rerun:
+            self.refresh()
+
+    def _rebuild_cache(self) -> None:
+        items: Dict[int, ProcessTreeItem] = {}
+
+        def visit(item: ProcessTreeItem) -> None:
+            if item.node:
+                items[item.node.pid] = item
+            for child in item.children:
+                visit(child)
+
+        visit(self._root)
+        self._items_by_pid = items
+
+    def rowCount(self, parent=QModelIndex()):  # noqa: N802
+        parent_item = self._root if not parent.isValid() else parent.internalPointer()
+        if isinstance(parent_item, ProcessTreeItem):
+            return parent_item.child_count()
+        return 0
+
+    def columnCount(self, parent=QModelIndex()):  # noqa: N802
+        return len(self.COLS)
+
+    def index(self, row, column, parent=QModelIndex()):  # noqa: N802
+        if not self.hasIndex(row, column, parent):
+            return QModelIndex()
+        parent_item = self._root if not parent.isValid() else parent.internalPointer()
+        if not isinstance(parent_item, ProcessTreeItem):
+            return QModelIndex()
+        child = parent_item.child(row)
+        if child is None:
+            return QModelIndex()
+        return self.createIndex(row, column, child)
+
+    def parent(self, index):  # noqa: N802
+        if not index.isValid():
+            return QModelIndex()
+        item = index.internalPointer()
+        if not isinstance(item, ProcessTreeItem):
+            return QModelIndex()
+        parent_item = item.parent
+        if not parent_item or parent_item is self._root:
+            return QModelIndex()
+        return self.createIndex(parent_item.row(), 0, parent_item)
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):  # noqa: N802
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return self.COLS[section]
+        return section + 1
+
+    def data(self, index, role=Qt.DisplayRole):  # noqa: N802
+        if not index.isValid():
+            return None
+        item = index.internalPointer()
+        if not isinstance(item, ProcessTreeItem) or not item.node:
+            return None
+        node = item.node
+        col = index.column()
+        if role == Qt.DisplayRole:
+            if col == 0:
+                return item.display_name()
+            if col == 1:
+                return f"{node.aggregate_rss_mb:,.1f}"
+            if col == 2:
+                return str(node.pid)
+            if col == 3:
+                return node.exe
+        return None
+
+    def flags(self, index):  # noqa: N802
+        if not index.isValid():
+            return Qt.NoItemFlags
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable
+
+    def node_for_index(self, index: QModelIndex) -> Optional[ProcessTreeItem]:
+        if not index.isValid():
+            return None
+        item = index.internalPointer()
+        if isinstance(item, ProcessTreeItem):
+            return item
+        return None
+
+    def index_for_pid(self, pid: int, column: int = 0) -> QModelIndex:
+        item = self._items_by_pid.get(pid)
+        if not item:
+            return QModelIndex()
+        parent_item = item.parent if item.parent else self._root
+        row = item.row()
+        return self.createIndex(row, column, item)
+
+
+class ProcessFilterProxyModel(QSortFilterProxyModel):
+    """Proxy model that keeps parents visible when descendants match."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._filter_text = ""
+
+    def setFilterFixedString(self, pattern: str):  # noqa: N802
+        self._filter_text = pattern or ""
+        super().setFilterFixedString(pattern)
+
+    def filterAcceptsRow(self, source_row, source_parent):  # noqa: N802
+        model = self.sourceModel()
+        if model is None:
+            return False
+        index = model.index(source_row, 0, source_parent)
+        if not index.isValid():
+            return False
+        if not self._filter_text:
+            return True
+        if self._matches_index(index):
+            return True
+        for row in range(model.rowCount(index)):
+            if self.filterAcceptsRow(row, index):
+                return True
+        return False
+
+    def _matches_index(self, index) -> bool:
+        model = self.sourceModel()
+        if model is None:
+            return False
+        text = self._filter_text.casefold()
+        parent = index.parent()
+        columns = model.columnCount(parent) if hasattr(model, "columnCount") else 1
+        for col in range(columns):
+            idx = model.index(index.row(), col, parent)
+            data = model.data(idx, Qt.DisplayRole)
+            if data is None:
+                continue
+            if text in str(data).casefold():
+                return True
+        return False
 
 class Sparkline(QWidget):
     """Tiny widget drawing a sparkline of recent reclaimed values."""
@@ -1047,12 +1321,21 @@ class TargetsTable(QTableWidget):
 class AddTargetDialog(QDialog):
     """Dialog for adding a new target using a friendly form."""
 
-    def __init__(self, key: str, match_by: str, parent=None):
+    def __init__(
+        self,
+        key: str,
+        match_by: str,
+        parent=None,
+        *,
+        summary: Optional[List[str]] = None,
+        include_children: bool = False,
+    ):
         """Pre-fill the dialog with sensible defaults for ``key`` and mode."""
 
         super().__init__(parent)
         self.setWindowTitle("Add Target")
         self.setMinimumWidth(520)
+        self._include_children = bool(include_children)
         form = QFormLayout(self)
         self.le_key = QLineEdit(key)
         self.cmb_match = QComboBox()
@@ -1069,6 +1352,10 @@ class AddTargetDialog(QDialog):
         form.addRow("Target pattern:", self.le_key)
         form.addRow("Match by:", self.cmb_match)
         form.addRow("Preview:", self.lbl_preview)
+        if summary:
+            summary_label = QLabel("\n".join(summary))
+            summary_label.setWordWrap(True)
+            form.addRow("Subprocesses:", summary_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -1085,11 +1372,11 @@ class AddTargetDialog(QDialog):
         if not key:
             self.lbl_preview.setText("Matches: 0")
             return
-        preview_target = Target(key=key, match_by=match_by)
+        preview_target = Target(key=key, match_by=match_by, include_children=self._include_children)
         pids = match_pids(preview_target)
         self.lbl_preview.setText(f"Matches: {len(pids)}")
 
-    def get_values(self) -> Tuple[str, str, int, bool]:
+    def get_values(self) -> Tuple[str, str, int, bool, bool]:
         """Return the form values in a convenient tuple."""
 
         return (
@@ -1097,6 +1384,7 @@ class AddTargetDialog(QDialog):
             self.cmb_match.currentText(),
             int(self.sb_interval.value()),
             bool(self.cb_autostart.isChecked()),
+            bool(self._include_children),
         )
 
 
@@ -1328,6 +1616,8 @@ class Dashboard(QWidget):
 
 __all__ = [
     "ProcessTableModel",
+    "ProcessTreeModel",
+    "ProcessFilterProxyModel",
     "Sparkline",
     "GroupsSidebar",
     "GroupSettingsDialog",
