@@ -1112,6 +1112,16 @@ class SettingsDialog(QDialog):
         self.cfg = config
 
         form = QFormLayout(self)
+        self.cmb_theme = QComboBox()
+        self.cmb_theme.addItem("Dark", "dark")
+        self.cmb_theme.addItem("Light", "light")
+        idx = self.cmb_theme.findData(config.theme)
+        if idx >= 0:
+            self.cmb_theme.setCurrentIndex(idx)
+        else:
+            fallback = self.cmb_theme.findData("dark")
+            if fallback >= 0:
+                self.cmb_theme.setCurrentIndex(fallback)
         self.kse = QKeySequenceEdit()
         if config.hotkey:
             self.kse.setKeySequence(config.hotkey)
@@ -1123,6 +1133,10 @@ class SettingsDialog(QDialog):
         self.cb_protect_system.setChecked(bool(config.protect_system))
         self.cb_pressure = QCheckBox("Enable pressure-aware gobbling")
         self.cb_pressure.setChecked(bool(config.pressure_enabled))
+        self.cb_tray_mode = QCheckBox()
+        self.cb_tray_mode.setChecked(bool(config.tray_mode))
+        self.cb_startup = QCheckBox()
+        self.cb_startup.setChecked(bool(config.startup_enabled))
         self.sb_min_free = QSpinBox()
         self.sb_min_free.setRange(5, 80)
         self.sb_min_free.setValue(int(config.min_free_percent))
@@ -1135,11 +1149,14 @@ class SettingsDialog(QDialog):
         self.sb_batt_factor.setRange(1, 4)
         self.sb_batt_factor.setValue(int(config.battery_slow_factor))
 
+        form.addRow("Theme:", self.cmb_theme)
         form.addRow("Global hotkey:", self.kse)
         form.addRow("Wake behaviour:", self.cb_wake)
         form.addRow("Show system processes:", self.cb_show_system)
         form.addRow("Protect system processes:", self.cb_protect_system)
         form.addRow("Pressure-aware gobbling:", self.cb_pressure)
+        form.addRow("Minimize to tray on close:", self.cb_tray_mode)
+        form.addRow("Start with Windows:", self.cb_startup)
         form.addRow("Min free RAM %:", self.sb_min_free)
         form.addRow("Gaming mode:", self.cb_gaming)
         form.addRow("Battery mode:", self.cmb_batt)
@@ -1159,6 +1176,10 @@ class SettingsDialog(QDialog):
         self.cfg.show_system = bool(self.cb_show_system.isChecked())
         self.cfg.protect_system = bool(self.cb_protect_system.isChecked())
         self.cfg.pressure_enabled = bool(self.cb_pressure.isChecked())
+        theme = self.cmb_theme.currentData()
+        self.cfg.theme = theme if theme in {"light", "dark"} else "dark"
+        self.cfg.tray_mode = bool(self.cb_tray_mode.isChecked())
+        self.cfg.startup_enabled = bool(self.cb_startup.isChecked())
         self.cfg.min_free_percent = int(self.sb_min_free.value())
         self.cfg.gaming_mode = bool(self.cb_gaming.isChecked())
         self.cfg.battery_mode = self.cmb_batt.currentText()

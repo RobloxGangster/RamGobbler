@@ -116,21 +116,6 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self.act_light = QAction("Light theme", self, checkable=True)
-        self.act_light.setChecked(self.config.theme == "light")
-        self.act_light.toggled.connect(self._toggle_theme)
-        tb.addAction(self.act_light)
-
-        self.act_traymode = QAction("Minimize to tray on close", self, checkable=True)
-        self.act_traymode.setChecked(self.config.tray_mode)
-        self.act_traymode.toggled.connect(self._toggle_tray_mode)
-        tb.addAction(self.act_traymode)
-
-        self.act_startup = QAction("Start with Windows", self, checkable=True)
-        self.act_startup.setChecked(self.config.startup_enabled or is_startup_enabled())
-        self.act_startup.toggled.connect(self._toggle_startup)
-        tb.addAction(self.act_startup)
-
         self.act_export = QAction("Export Settings…", self)
         self.act_export.triggered.connect(self._export_settings)
         tb.addAction(self.act_export)
@@ -287,32 +272,69 @@ class MainWindow(QMainWindow):
                 splitter.setCollapsible(idx, was_collapsible)
             splitter.blockSignals(False)
 
+    def _apply_theme_choice(
+        self, theme: str, *, persist: bool = True, previous: Optional[str] = None
+    ) -> None:
+        """Apply the requested theme and optionally persist it."""
+
+        selected = "light" if theme == "light" else "dark"
+        prior = previous if previous is not None else self.config.theme
+        changed = prior != selected
+        self.config.theme = selected
+        if changed:
+            self._apply_styles(selected)
+        if persist:
+            self.config.save()
+
     def _toggle_theme(self, on: bool):
         """Switch between dark and light stylesheets."""
 
-        self.config.theme = "light" if on else "dark"
-        self.config.save()
-        self._apply_styles(self.config.theme)
+        self._apply_theme_choice("light" if on else "dark", persist=True)
+
+    def _apply_tray_mode(
+        self, enabled: bool, *, persist: bool = True, previous: Optional[bool] = None
+    ) -> None:
+        """Persist the minimise-to-tray preference."""
+
+        val = bool(enabled)
+        prior = previous if previous is not None else self.config.tray_mode
+        changed = prior != val
+        self.config.tray_mode = val
+        if persist:
+            self.config.save()
+        if persist and changed:
+            msg = "Minimize to tray on close enabled" if val else "Minimize to tray on close disabled"
+            self.statusBar().showMessage(msg, 3000)
 
     def _toggle_tray_mode(self, on: bool):
         """Persist the minimise-to-tray preference."""
 
-        self.config.tray_mode = bool(on)
-        self.config.save()
+        self._apply_tray_mode(on, persist=True)
+
+    def _apply_startup_preference(
+        self, enabled: bool, *, persist: bool = True, previous: Optional[bool] = None
+    ) -> bool:
+        """Enable or disable the Windows startup registration."""
+
+        target = bool(enabled)
+        ok, msg = set_startup_enabled(target)
+        if not ok:
+            QMessageBox.warning(self, APP_NAME, msg)
+            if previous is not None:
+                self.config.startup_enabled = bool(previous)
+            else:
+                self.config.startup_enabled = is_startup_enabled()
+            return False
+        self.config.startup_enabled = target
+        if persist:
+            self.config.save()
+        self.statusBar().showMessage(msg, 3000)
+        return True
 
     def _toggle_startup(self, on: bool):
         """Enable or disable the Windows startup registration."""
 
-        ok, msg = set_startup_enabled(bool(on))
-        if not ok:
-            QMessageBox.warning(self, APP_NAME, msg)
-            self.act_startup.blockSignals(True)
-            self.act_startup.setChecked(is_startup_enabled())
-            self.act_startup.blockSignals(False)
-            return
-        self.config.startup_enabled = bool(on)
-        self.config.save()
-        self.statusBar().showMessage(msg, 3000)
+        self._apply_startup_preference(on, persist=True)
 
     def _toggle_show_system(self, _):
         """Refresh the process table when the system filter changes."""
@@ -607,15 +629,29 @@ class MainWindow(QMainWindow):
                 raise ValueError("Invalid config file")
             self.config.save()
             shutil.copy2(path, CONFIG_PATH)
+            prev_theme = self.config.theme
+            prev_tray = self.config.tray_mode
+            prev_startup = self.config.startup_enabled
             self.config.load()
             self.proc_model.set_include_system(self.config.show_system)
             self.targets_table.refresh(force=True)
-            self._apply_styles(self.config.theme)
-            self.act_light.setChecked(self.config.theme == "light")
-            self.act_startup.setChecked(self.config.startup_enabled or is_startup_enabled())
+            if self.config.theme != prev_theme:
+                self._apply_theme_choice(
+                    self.config.theme, persist=False, previous=prev_theme
+                )
+            if self.config.tray_mode != prev_tray:
+                self._apply_tray_mode(
+                    self.config.tray_mode, persist=False, previous=prev_tray
+                )
+            startup_msg_shown = False
+            if self.config.startup_enabled != prev_startup:
+                startup_msg_shown = self._apply_startup_preference(
+                    self.config.startup_enabled, persist=False, previous=prev_startup
+                )
             self.cb_show_system.setChecked(self.config.show_system)
             self._apply_hotkey(self.config.hotkey)
-            self.statusBar().showMessage("Settings imported", 3000)
+            if not startup_msg_shown:
+                self.statusBar().showMessage("Settings imported", 3000)
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, f"Import failed: {exc}")
 
@@ -746,13 +782,36 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         """Open the settings dialog and persist any accepted changes."""
 
+        prev_theme = self.config.theme
+        prev_tray_mode = self.config.tray_mode
+        prev_startup = self.config.startup_enabled
         dialog = SettingsDialog(self.config, self)
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
-            self.config.save()
+            theme_changed = self.config.theme != prev_theme
+            tray_changed = self.config.tray_mode != prev_tray_mode
+            startup_changed = self.config.startup_enabled != prev_startup
+
+            if theme_changed:
+                self._apply_theme_choice(
+                    self.config.theme, persist=False, previous=prev_theme
+                )
+            if tray_changed:
+                self._apply_tray_mode(
+                    self.config.tray_mode, persist=False, previous=prev_tray_mode
+                )
+
+            startup_msg_shown = False
+            if startup_changed:
+                startup_msg_shown = self._apply_startup_preference(
+                    self.config.startup_enabled, persist=False, previous=prev_startup
+                )
+
             self.proc_model.set_include_system(self.config.show_system)
             self._apply_hotkey(self.config.hotkey)
-            self.statusBar().showMessage("Settings saved", 3000)
+            self.config.save()
+            if not startup_msg_shown:
+                self.statusBar().showMessage("Settings saved", 3000)
 
     def _apply_hotkey(self, hotkey_str: str):
         """Register a global hotkey from the configuration string."""
