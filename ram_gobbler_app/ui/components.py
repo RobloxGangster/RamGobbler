@@ -273,7 +273,7 @@ class ProcessTreeItem:
 class ProcessTreeModel(QAbstractItemModel):
     """Hierarchical process model mirroring Task Manager's grouped view."""
 
-    COLS = ["Process", "Memory (MB)", "PID", "Path"]
+    COLS = ["Process", "Memory (MB)", "PID"]
     nodes_ready = Signal(object, object)
 
     def __init__(self, include_system: bool):
@@ -417,8 +417,8 @@ class ProcessTreeModel(QAbstractItemModel):
                 return f"{node.aggregate_rss_mb:,.1f}"
             if col == 2:
                 return str(node.pid)
-            if col == 3:
-                return node.exe
+        if role == getattr(Qt, "ToolTipRole", None) and node.exe:
+            return node.exe
         return None
 
     def flags(self, index):  # noqa: N802
