@@ -252,14 +252,22 @@ class ProcessTreeItem:
         return f"PID {self.node.pid}"
 
     def all_pids(self) -> List[int]:
-        if not self.node:
-            return []
-        return list(self.node.descendant_pids)
+        if self.node:
+            return list(self.node.descendant_pids)
+        pids: List[int] = []
+        for child in self.children:
+            pids.extend(child.all_pids())
+        return pids
 
     def iter_nodes(self) -> Iterable[ProcessNode]:
-        if not self.node:
-            return []
-        return self.node.walk()
+        if self.node:
+            return self.node.walk()
+
+        def descendants() -> Iterable[ProcessNode]:
+            for child in self.children:
+                yield from child.iter_nodes()
+
+        return descendants()
 
 
 class ProcessTreeModel(QAbstractItemModel):
