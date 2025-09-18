@@ -1256,7 +1256,7 @@ class TargetsTable(QTableWidget):
     def _on_start(self, index: int):
         """Tell the gobbler thread to start processing a target."""
 
-        self.gobbler.set_active(index, True)
+        self.gobbler.trigger_now(index, ensure_active=True)
         self.refresh(force=True)
 
     def _on_stop(self, index: int):
