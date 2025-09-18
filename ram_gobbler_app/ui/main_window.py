@@ -664,7 +664,7 @@ class MainWindow(QMainWindow):
 
         for index, target in enumerate(self.config.targets):
             if not self.current_group or target.group_id == self.current_group:
-                self.gobbler.set_active(index, True)
+                self.gobbler.trigger_now(index, ensure_active=True, continuous=True)
         self.targets_table.refresh(force=True)
         scope = self._group_name(self.current_group) if self.current_group else "all targets"
         self.statusBar().showMessage(f"Gobbling started for {scope}", 3000)

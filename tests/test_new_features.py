@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import types
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 if ROOT not in sys.path:
     sys.path.append(ROOT)
@@ -57,3 +59,46 @@ def test_parse_args_legacy_aliases():
     legacy_group_attr = legacy_group.replace('-', '_').lstrip('_')
     assert getattr(args, legacy_visible_attr)
     assert getattr(args, legacy_group_attr) == 'foo'
+
+
+def test_continuous_trigger_bypasses_pressure(tmp_path):
+    config = Config(str(tmp_path / 'config.json'))
+    config.targets = [Target(key='x', match_by='name', active=True, interval_sec=1)]
+    config.jitter_pct = 0
+    metrics = Metrics(str(tmp_path / 'metrics.json'))
+    results = []
+
+    g = Gobbler(config, metrics, lambda *args, **kwargs: None, lambda *args, **kwargs: None)
+
+    def fake_allow(self):
+        return False, 'Pressure off'
+
+    def fake_perform(self, index, target, reason):
+        target.last_gobble_ts = time.time()
+        results.append(reason)
+
+    g._allow_gobbling_now = types.MethodType(fake_allow, g)
+    g._perform_gobble = types.MethodType(fake_perform, g)
+
+    g.start()
+    try:
+        time.sleep(1.2)
+        assert results == []
+
+        g.trigger_now(0, ensure_active=True, continuous=True)
+        deadline = time.time() + 6
+        while time.time() < deadline and not results:
+            time.sleep(0.05)
+        assert results and results[0] == 'manual'
+
+        deadline = time.time() + 6
+        while time.time() < deadline and not any(reason == 'timer' for reason in results[1:]):
+            time.sleep(0.05)
+
+        g.set_active(0, False)
+    finally:
+        g.stop()
+        time.sleep(0.2)
+
+    assert results and results[0] == 'manual'
+    assert any(reason == 'timer' for reason in results[1:])

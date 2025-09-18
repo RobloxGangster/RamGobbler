@@ -665,7 +665,7 @@ class GroupsSidebar(QWidget):
         gid = self.current_group_id()
         for index, target in enumerate(controller.config.targets):
             if not gid or target.group_id == gid:
-                controller.gobbler.set_active(index, True)
+                controller.gobbler.trigger_now(index, ensure_active=True, continuous=True)
         targets_table = getattr(controller, "targets_table", None)
         if targets_table and hasattr(targets_table, "refresh"):
             targets_table.refresh(force=True)
@@ -1256,7 +1256,7 @@ class TargetsTable(QTableWidget):
     def _on_start(self, index: int):
         """Tell the gobbler thread to start processing a target."""
 
-        self.gobbler.trigger_now(index, ensure_active=True)
+        self.gobbler.trigger_now(index, ensure_active=True, continuous=True)
         self.refresh(force=True)
 
     def _on_stop(self, index: int):
