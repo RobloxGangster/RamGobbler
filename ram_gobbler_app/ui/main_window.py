@@ -754,22 +754,24 @@ class MainWindow(QMainWindow):
         proxy_index = selection[0]
         src_index = self.proxy.mapToSource(proxy_index)
         item = self.proc_model.node_for_index(src_index)
-        if not item or not item.node:
+        if not item:
             return
-        node = item.node
-        try:
-            if is_system_process(psutil.Process(node.pid)) and self.config.protect_system:
-                QMessageBox.warning(
-                    self,
-                    APP_NAME,
-                    "This looks like a system process. It's hidden/protected by default.",
-                )
-                return
-        except Exception:
-            pass
         subtree_nodes = list(item.iter_nodes())
         if not subtree_nodes:
             return
+        selected_node = item.node
+        primary_node = selected_node or subtree_nodes[0]
+        if selected_node and self.config.protect_system:
+            try:
+                if is_system_process(psutil.Process(selected_node.pid)):
+                    QMessageBox.warning(
+                        self,
+                        APP_NAME,
+                        "This looks like a system process. It's hidden/protected by default.",
+                    )
+                    return
+            except Exception:
+                pass
         seen = {(t.key.casefold(), t.match_by) for t in self.config.targets}
         additions: List[Tuple[ProcessNode, str, str]] = []
         for candidate in subtree_nodes:
@@ -795,9 +797,10 @@ class MainWindow(QMainWindow):
                 "Every process in this group is already configured as a target.",
             )
             return
+        primary_pid = primary_node.pid
         primary = None
         for entry in additions:
-            if entry[0].pid == node.pid:
+            if entry[0].pid == primary_pid:
                 primary = entry
                 break
         if primary is None:
@@ -874,9 +877,11 @@ class MainWindow(QMainWindow):
         proxy_index = selection[0]
         src_index = self.proxy.mapToSource(proxy_index)
         item = self.proc_model.node_for_index(src_index)
-        if not item or not item.node:
+        if not item:
             return
-        node = item.node
+        nodes = list(item.iter_nodes())
+        if not nodes:
+            return
         pids = []
         seen: Set[int] = set()
         for pid in item.all_pids():
@@ -886,6 +891,13 @@ class MainWindow(QMainWindow):
         if not pids:
             return
         display = item.display_name()
+        if not display:
+            first_node = nodes[0]
+            base_label = first_node.name or first_node.exe or f"PID {first_node.pid}"
+            if len(nodes) > 1:
+                display = f"{base_label} and {len(nodes) - 1} more"
+            else:
+                display = base_label
         reclaimed = 0.0
         processed = 0
         skipped = 0
