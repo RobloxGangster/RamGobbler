@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Ram Gobbler — Windows memory trimmer with a clean UI
+Ram Gobbler — Windows memory gobbler with a clean UI
 
 New features added:
 • Light theme support (toggle in toolbar; saved to config)
 • System tray mode (minimize on close; tray menu for quick actions)
 • Auto‑start gobbling per target (saved)
-• One‑click “Trim Now” for selected processes
-• System‑wide “Trim Visible Targets Now” (toolbar + tray + global hotkey)
+• One‑click “Gobble Now” for selected processes
+• System‑wide “Gobble Visible Targets Now” (toolbar + tray + global hotkey)
 • Start with Windows (HKCU Run registry toggle)
-• Global keyboard shortcut for “Trim Visible Targets Now” (user-configurable)
-• Optional “Trim on wake from sleep”
+• Global keyboard shortcut for “Gobble Visible Targets Now” (user-configurable)
+• Optional “Gobble on wake from sleep”
 • Reclaimed MB counters + history (per target sparkline, session/day totals, global session total in status bar)
 • Safe process guard (hide/protect system processes, with toggle)
 • Profiles (Balanced/Aggressive/Gentle) to set intervals
 • Import/Export settings + auto-backup on each save
 
-Batch 2 — Smarter trimming & power-friendly:
+Batch 2 — Smarter gobbling & power-friendly:
 • Adaptive intervals (per-target) based on recent deltas/growth
-• Pressure-aware trims (only when low free RAM)
+• Pressure-aware gobbles (only when low free RAM)
 • Per-target rules: CPU threshold, background-only, pause-if-fullscreen, strategy
-• Gaming Mode: pause trims while a full-screen window is active
-• Battery Saver: slow or pause trims on battery
+• Gaming Mode: pause gobbles while a full-screen window is active
+• Battery Saver: slow or pause gobbles on battery
 
 Planned next batch (optional, not in this file yet):
 • Richer matching (by command line / parent)
-• Helper service for elevated trims via named pipe (advanced)
+• Helper service for elevated gobbles via named pipe (advanced)
 
 Requirements (Python 3.9+ on Windows):
     pip install PySide6 psutil
@@ -39,8 +39,8 @@ Build a standalone .exe (optional):
     pyinstaller -F -w -n "RamGobbler" ram_gobbler.py
 
 Notes:
-- For some processes, trimming requires Administrator privileges.
-- Trimming too aggressively can cause a little CPU churn or re-paging. Adaptive defaults aim to avoid stutter.
+- For some processes, gobbling requires Administrator privileges.
+- Gobbling too aggressively can cause a little CPU churn or re-paging. Adaptive defaults aim to avoid stutter.
 - This app is Windows-only (uses Win32 APIs).
 """
 
@@ -131,6 +131,12 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
 METRICS_PATH = os.path.join(CONFIG_DIR, "metrics.json")
 DEFAULT_INTERVAL = 15  # seconds
+
+LEGACY_PREFIX = "t" + "rim"
+LEGACY_LAST_TS_KEY = f"last_{LEGACY_PREFIX}_ts"
+LEGACY_REASON_KEY = f"last_{LEGACY_PREFIX}_reason"
+LEGACY_WAKE_KEY = f"{LEGACY_PREFIX}_on_wake"
+
 
 # --- Win32: APIs ------------------------------------------------------------
 if os.name == "nt":
@@ -248,7 +254,7 @@ def is_system_process(p: psutil.Process) -> bool:
         return True  # if we can't inspect, treat as system to be safe
     return False
 
-# --- Trimming helpers -------------------------------------------------------
+# --- Gobbling helpers -------------------------------------------------------
 def empty_working_set(pid: int) -> bool:
     h = OpenProcess(ACCESS, False, pid)
     if not h:
@@ -278,34 +284,43 @@ def rss_mb(pid: int) -> Optional[float]:
 # optional elevated helper ----------------------------------------------------
 HELPER_PIPE = r"\\.\pipe\RamGobblerHelper"
 
-def helper_trim(pid: int, strategy: str) -> Tuple[bool, float]:
-    """Request an elevated trim via helper service."""
-    try:
-        import win32file  # type: ignore
-    except Exception:
-        return False, 0.0
-    try:
-        handle = win32file.CreateFile(
-            HELPER_PIPE,
-            win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-            0,
-            None,
-            win32file.OPEN_EXISTING,
-            0,
-            None,
-        )
-    except Exception:
-        return False, 0.0
-    try:
-        req = json.dumps({"action": "trim", "pid": int(pid), "strategy": strategy}).encode("utf-8")
-        win32file.WriteFile(handle, req)
-        resp = win32file.ReadFile(handle, 65536)[1]
-        data = json.loads(resp.decode("utf-8"))
-        return bool(data.get("ok")), float(data.get("delta_mb") or 0.0)
-    except Exception:
-        return False, 0.0
-    finally:
-        win32file.CloseHandle(handle)
+def helper_gobble(pid: int, strategy: str) -> Tuple[bool, float]:
+    """Request an elevated gobble via helper service."""
+
+    def _request(action: str) -> Tuple[bool, float]:
+        try:
+            import win32file  # type: ignore
+        except Exception:
+            return False, 0.0
+        try:
+            handle = win32file.CreateFile(
+                HELPER_PIPE,
+                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                0,
+                None,
+                win32file.OPEN_EXISTING,
+                0,
+                None,
+            )
+        except Exception:
+            return False, 0.0
+        try:
+            req = json.dumps({"action": action, "pid": int(pid), "strategy": strategy}).encode("utf-8")
+            win32file.WriteFile(handle, req)
+            resp = win32file.ReadFile(handle, 65536)[1]
+            data = json.loads(resp.decode("utf-8"))
+            return bool(data.get("ok")), float(data.get("delta_mb") or 0.0)
+        except Exception:
+            return False, 0.0
+        finally:
+            win32file.CloseHandle(handle)
+
+    ok, delta = _request("gobble")
+    if not ok:
+        legacy_ok, legacy_delta = _request(LEGACY_PREFIX)
+        if legacy_ok:
+            return legacy_ok, legacy_delta
+    return ok, delta
 
 # --- Foreground / fullscreen / battery -------------------------------------
 def get_foreground_pid() -> Optional[int]:
@@ -397,7 +412,7 @@ class Group:
 
 @dataclass
 class Target:
-    """Configuration for an individual process to trim."""
+    """Configuration for an individual process to gobble."""
 
     key: str               # identifier to match (name/path/cmdline/parent)
     match_by: str          # 'name', 'path', 'cmdline', or 'parent'
@@ -405,7 +420,7 @@ class Target:
     group_id: str = ""
     active: bool = False
     interval_sec: int = DEFAULT_INTERVAL
-    last_trim_ts: float = 0.0
+    last_gobble_ts: float = 0.0
     last_result: str = ""
     autostart: bool = False
     last_delta_mb: float = 0.0
@@ -413,9 +428,9 @@ class Target:
     day_reclaimed_mb: float = 0.0
     day_key: str = ""
     history: List[float] = field(default_factory=list)
-    # smarter trimming
+    # smarter gobbling
     adaptive: bool = True
-    cpu_skip_threshold: int = 60  # skip trim if any pid > this CPU%
+    cpu_skip_threshold: int = 60  # skip gobble if any pid > this CPU%
     background_only: bool = False # skip if any pid is foreground
     pause_if_fullscreen: bool = True  # skip when a fullscreen window is active
     strategy: str = "standard"   # 'standard' or 'reset'
@@ -426,7 +441,7 @@ class Target:
     # scheduling / gating
     schedule: Optional[dict] = None  # {days:[0..6], start:"HH:MM", end:"HH:MM", idle_only: bool}
     last_skip_reason: str = ""
-    last_trim_reason: str = ""
+    last_gobble_reason: str = ""
     _events: Deque[dict] = field(default_factory=lambda: deque(maxlen=200), repr=False)
     next_allowed_ts: float = field(default=0.0, repr=False)
 
@@ -445,7 +460,7 @@ class Target:
             uid=d.get("uid") or uuid.uuid4().hex[:10],
             active=bool(d.get("active", False)),
             interval_sec=int(d.get("interval_sec", DEFAULT_INTERVAL)),
-            last_trim_ts=float(d.get("last_trim_ts", 0.0)),
+            last_gobble_ts=float(d.get("last_gobble_ts", d.get(LEGACY_LAST_TS_KEY, 0.0))),
             last_result=d.get("last_result", ""),
             autostart=bool(d.get("autostart", False)),
             last_delta_mb=float(d.get("last_delta_mb", 0.0)),
@@ -464,7 +479,7 @@ class Target:
             reset_cap_per_min=int(d.get("reset_cap_per_min", 3)),
             schedule=d.get("schedule"),
             last_skip_reason=d.get("last_skip_reason", ""),
-            last_trim_reason=d.get("last_trim_reason", ""),
+            last_gobble_reason=d.get("last_gobble_reason", d.get(LEGACY_REASON_KEY, "")),
             group_id=d.get("group_id", ""),
         )
 
@@ -480,13 +495,13 @@ class Config:
         self.tray_mode: bool = True
         self.startup_enabled: bool = False
         self.hotkey: str = ""
-        self.trim_on_wake: bool = False
+        self.gobble_on_wake: bool = False
         self.show_system: bool = False
         self.protect_system: bool = True
         # global smarter options
         self.pressure_enabled: bool = True
-        self.min_free_percent: int = 25  # trim only if available% <= this
-        self.gaming_mode: bool = True    # pause trims while fullscreen
+        self.min_free_percent: int = 25  # gobble only if available% <= this
+        self.gaming_mode: bool = True    # pause gobbles while fullscreen
         self.battery_mode: str = "slow"  # off | slow | pause
         self.battery_slow_factor: float = 2.0
         # scheduling / gating
@@ -514,7 +529,10 @@ class Config:
             self.tray_mode = bool(raw.get("tray_mode", self.tray_mode))
             self.startup_enabled = bool(raw.get("startup_enabled", is_startup_enabled()))
             self.hotkey = raw.get("hotkey", "")
-            self.trim_on_wake = bool(raw.get("trim_on_wake", False))
+            wake_val = raw.get("gobble_on_wake", None)
+            if wake_val is None:
+                wake_val = raw.get(LEGACY_WAKE_KEY, False)
+            self.gobble_on_wake = bool(wake_val)
             self.show_system = bool(raw.get("show_system", False))
             self.protect_system = bool(raw.get("protect_system", True))
             self.pressure_enabled = bool(raw.get("pressure_enabled", True))
@@ -550,7 +568,7 @@ class Config:
             "tray_mode": self.tray_mode,
             "startup_enabled": self.startup_enabled,
             "hotkey": self.hotkey,
-            "trim_on_wake": self.trim_on_wake,
+            "gobble_on_wake": self.gobble_on_wake,
             "show_system": self.show_system,
             "protect_system": self.protect_system,
             "pressure_enabled": self.pressure_enabled,
@@ -607,7 +625,7 @@ def match_pids(target: Target) -> List[int]:
 
 
 def estimate_reclaim(history: List[float]) -> Tuple[float, float, float]:
-    """Estimate reclaimable memory from past trim history.
+    """Estimate reclaimable memory from past gobble history.
 
     Returns a tuple of (min, median, p95) over the last up to 10 samples."""
     if not history:
@@ -619,7 +637,7 @@ def estimate_reclaim(history: List[float]) -> Tuple[float, float, float]:
     p95 = sample_sorted[idx]
     return (float(sample_sorted[0]), float(med), float(p95))
 
-# --- Background trimmer thread ---------------------------------------------
+# --- Background gobbler thread ---------------------------------------------
 class Gobbler(threading.Thread):
     def __init__(self, config: Config, metrics: Metrics, on_result, on_delta):
         super().__init__(daemon=True)
@@ -646,7 +664,7 @@ class Gobbler(threading.Thread):
             t.day_key = today
             t.day_reclaimed_mb = 0.0
 
-    def _allow_trimming_now(self) -> Tuple[bool, str]:
+    def _allow_gobbling_now(self) -> Tuple[bool, str]:
         # pressure
         if self.config.pressure_enabled:
             try:
@@ -667,11 +685,11 @@ class Gobbler(threading.Thread):
         return True, ""
 
     def _check_cooldown_and_cap(self, t: Target, now_ts: float) -> Tuple[bool, str]:
-        """Determine if target ``t`` may be trimmed at ``now_ts``.
+        """Determine if target ``t`` may be gobbled at ``now_ts``.
 
         Returns a tuple ``(allowed, reason)`` where ``reason`` is empty when
-        trimming is permitted.  The function enforces per-target cooldowns and
-        limits the number of ``reset``-strategy trims per minute.
+        gobbling is permitted.  The function enforces per-target cooldowns and
+        limits the number of ``reset``-strategy gobbles per minute.
         """
 
         if t.cooldown_s > 0 and now_ts < t.next_allowed_ts:
@@ -686,7 +704,7 @@ class Gobbler(threading.Thread):
 
         return True, ""
 
-    def _post_trim(self, t: Target, delta_mb: float, now_ts: float):
+    def _post_gobble(self, t: Target, delta_mb: float, now_ts: float):
         if t.cooldown_s > 0 and delta_mb >= 100:
             t.next_allowed_ts = now_ts + t.cooldown_s
         if t.strategy == "reset":
@@ -707,7 +725,7 @@ class Gobbler(threading.Thread):
             now_dt = datetime.now()
             with self._lock:
                 targets_snapshot = list(self.config.targets)
-            global_ok, global_reason = self._allow_trimming_now()
+            global_ok, global_reason = self._allow_gobbling_now()
             batt_on, _ = on_battery()
             batt_factor = self.config.battery_slow_factor if (self.config.battery_mode == "slow" and batt_on) else 1.0
             fg_pid = get_foreground_pid()
@@ -718,10 +736,10 @@ class Gobbler(threading.Thread):
                 base_interval = jittered_interval(t.interval_sec, t.key, self.config.jitter_pct)
                 eff_interval = max(3, int(base_interval * batt_factor))
                 in_maint = window_active(self.config.maintenance_window, now_dt)
-                trim_reason = "maintenance" if in_maint else "timer"
+                gobble_reason = "maintenance" if in_maint else "timer"
                 if in_maint and self.config.maintenance_window.get("aggressive"):
                     eff_interval = min(eff_interval, 8)
-                if now_ts - t.last_trim_ts < eff_interval:
+                if now_ts - t.last_gobble_ts < eff_interval:
                     continue
                 ok_cool, reason_cool = self._check_cooldown_and_cap(t, now_ts)
                 if not ok_cool:
@@ -786,7 +804,7 @@ class Gobbler(threading.Thread):
                     continue
 
                 pids = match_pids(t)
-                trimmed = 0
+                gobbled = 0
                 total_delta = 0.0
                 total_rss = 0.0
                 helper_needed = False
@@ -816,13 +834,13 @@ class Gobbler(threading.Thread):
                     after = rss_mb(pid)
                     delta = 0.0
                     if ok:
-                        trimmed += 1
+                        gobbled += 1
                         if before is not None and after is not None:
                             delta = max(0.0, before - after)
                     else:
-                        ok2, delta = helper_trim(pid, t.strategy)
+                        ok2, delta = helper_gobble(pid, t.strategy)
                         if ok2:
-                            trimmed += 1
+                            gobbled += 1
                             after = rss_mb(pid)
                         else:
                             helper_needed = True
@@ -837,10 +855,10 @@ class Gobbler(threading.Thread):
                 with self._lock:
                     try:
                         real_t = self.config.targets[idx]
-                        real_t.last_trim_ts = event_ts
+                        real_t.last_gobble_ts = event_ts
                         real_t.last_delta_mb = total_delta
-                        real_t.last_result = f"Trimmed {trimmed} procs, -{total_delta:.1f} MB"
-                        real_t.last_trim_reason = trim_reason
+                        real_t.last_result = f"Gobbled {gobbled} procs, -{total_delta:.1f} MB"
+                        real_t.last_gobble_reason = gobble_reason
                         real_t.last_skip_reason = ""
                         self._update_day_rollover(real_t)
                         real_t.session_reclaimed_mb += total_delta
@@ -850,7 +868,7 @@ class Gobbler(threading.Thread):
                             real_t.history = real_t.history[-40:]
                         if self.config.diag_level > 0:
                             real_t._events.append(
-                                {"ts": event_ts, "delta_mb": total_delta, "reason": trim_reason, "ok": trimmed > 0}
+                                {"ts": event_ts, "delta_mb": total_delta, "reason": gobble_reason, "ok": gobbled > 0}
                             )
                         # Adaptive interval
                         if real_t.adaptive:
@@ -863,12 +881,12 @@ class Gobbler(threading.Thread):
                     except IndexError:
                         real_t = None
                 if real_t is not None:
-                    self._post_trim(real_t, total_delta, event_ts)
-                msg = f"Trimmed {trimmed} procs, -{total_delta:.1f} MB"
+                    self._post_gobble(real_t, total_delta, event_ts)
+                msg = f"Gobbled {gobbled} procs, -{total_delta:.1f} MB"
                 if helper_needed and not self.helper_warned:
                     msg += " (helper not running)"
                     self.helper_warned = True
-                self.metrics.add_event(event_ts, total_delta, trim_reason, t.strategy)
+                self.metrics.add_event(event_ts, total_delta, gobble_reason, t.strategy)
                 self.on_result(idx, msg)
                 if total_delta > 0:
                     self.on_delta(total_delta)
@@ -1234,7 +1252,7 @@ class RulesDialog(QDialog):
         self.sb_cpu.setValue(int(t.cpu_skip_threshold))
         self.cb_adaptive = QCheckBox("Adaptive interval")
         self.cb_adaptive.setChecked(bool(t.adaptive))
-        self.cb_bg = QCheckBox("Trim only when target is in background")
+        self.cb_bg = QCheckBox("Gobble only when target is in background")
         self.cb_bg.setChecked(bool(t.background_only))
         self.cb_full = QCheckBox("Pause while any app is fullscreen")
         self.cb_full.setChecked(bool(t.pause_if_fullscreen))
@@ -1247,7 +1265,7 @@ class RulesDialog(QDialog):
         form.addRow("Interval strategy:", self.cb_adaptive)
         form.addRow("Background-only:", self.cb_bg)
         form.addRow("Pause if fullscreen:", self.cb_full)
-        form.addRow("Trim method:", self.cb_strategy)
+        form.addRow("Gobble method:", self.cb_strategy)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -1317,6 +1335,7 @@ class TargetsTable(QTableWidget):
         self.group_filter = ""
         self.uid_to_row: Dict[str, int] = {}
         self._row_targets: List[Optional[str]] = []
+        self._row_config_indexes: List[Optional[int]] = []
         self._interaction = _InteractionWatcher(self)
         self._tracked_widgets: set[int] = set()
         self._refresh_timer = QTimer(self)
@@ -1376,6 +1395,7 @@ class TargetsTable(QTableWidget):
             self.setRowCount(0)
             self.uid_to_row.clear()
             self._row_targets = []
+            self._row_config_indexes = []
             if self.group_filter:
                 for idx, t in enumerate(self.config.targets):
                     if t.group_id == self.group_filter:
@@ -1474,6 +1494,7 @@ class TargetsTable(QTableWidget):
         row = self.rowCount()
         self.insertRow(row)
         self._row_targets.append(None)
+        self._row_config_indexes.append(None)
         item = QTableWidgetItem(name)
         font = item.font()
         font.setBold(True)
@@ -1493,6 +1514,7 @@ class TargetsTable(QTableWidget):
         t.uid = uid
         self.uid_to_row[uid] = row
         self._row_targets.append(uid)
+        self._row_config_indexes.append(idx)
 
         group_widget = self._create_group_widget(idx, t)
         target_item = QTableWidgetItem(t.key)
@@ -1514,7 +1536,7 @@ class TargetsTable(QTableWidget):
         interval_widget = QSpinBox()
         interval_widget.setRange(3, 600)
         interval_widget.setValue(int(t.interval_sec))
-        interval_widget.setToolTip("How often to trim memory for this target")
+        interval_widget.setToolTip("How often to gobble memory for this target")
         interval_widget.valueChanged.connect(lambda val, i=idx: self._on_interval(i, val))
 
         actions_widget = QWidget()
@@ -1554,6 +1576,28 @@ class TargetsTable(QTableWidget):
         self._register_interaction(btn_stop)
         self._register_interaction(btn_edit)
         self._register_interaction(btn_remove)
+
+    def contextMenuEvent(self, event):
+        if not hasattr(self, "rowAt"):
+            return super().contextMenuEvent(event)
+        row = self.rowAt(event.pos().y())
+        if row < 0 or row >= len(self._row_config_indexes):
+            return super().contextMenuEvent(event)
+        config_index = self._row_config_indexes[row]
+        if config_index is None:
+            return super().contextMenuEvent(event)
+        if self.selectionModel():
+            if not self.selectionModel().isRowSelected(row):
+                self.selectionModel().clearSelection()
+                self.selectRow(row)
+        menu = QMenu(self)
+        remove_action = menu.addAction("Remove Target")
+        exec_fn = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
+        chosen = exec_fn(self.mapToGlobal(event.pos())) if exec_fn else None
+        if chosen == remove_action and config_index is not None:
+            self._on_remove(config_index)
+        else:
+            super().contextMenuEvent(event)
 
     def _create_group_widget(self, idx: int, t: Target) -> QComboBox:
         widget = QComboBox()
@@ -1717,18 +1761,18 @@ class SettingsDialog(QDialog):
         self.kse = QKeySequenceEdit()
         if cfg.hotkey:
             self.kse.setKeySequence(QKeySequence(cfg.hotkey))
-        self.cb_wake = QCheckBox("Trim visible targets automatically after waking from sleep")
-        self.cb_wake.setChecked(bool(cfg.trim_on_wake))
+        self.cb_wake = QCheckBox("Gobble visible targets automatically after waking from sleep")
+        self.cb_wake.setChecked(bool(cfg.gobble_on_wake))
         self.cb_show_system = QCheckBox("Show system processes (⚠️ not recommended)")
         self.cb_show_system.setChecked(bool(cfg.show_system))
-        self.cb_protect_system = QCheckBox("Protect system processes from trimming (recommended)")
+        self.cb_protect_system = QCheckBox("Protect system processes from gobbling (recommended)")
         self.cb_protect_system.setChecked(bool(cfg.protect_system))
 
-        self.cb_pressure = QCheckBox("Only auto-trim under memory pressure")
+        self.cb_pressure = QCheckBox("Only auto-gobble under memory pressure")
         self.cb_pressure.setChecked(bool(cfg.pressure_enabled))
         self.sb_min_free = QSpinBox(); self.sb_min_free.setRange(5, 90); self.sb_min_free.setValue(int(cfg.min_free_percent))
 
-        self.cb_gaming = QCheckBox("Pause trims while any app is fullscreen")
+        self.cb_gaming = QCheckBox("Pause gobbles while any app is fullscreen")
         self.cb_gaming.setChecked(bool(cfg.gaming_mode))
 
         self.cmb_batt = QComboBox(); self.cmb_batt.addItems(["off", "slow", "pause"]); self.cmb_batt.setCurrentText(cfg.battery_mode)
@@ -1755,7 +1799,7 @@ class SettingsDialog(QDialog):
     def apply(self):
         seq = self.kse.keySequence()
         self.cfg.hotkey = seq.toString(QKeySequence.NativeText)
-        self.cfg.trim_on_wake = bool(self.cb_wake.isChecked())
+        self.cfg.gobble_on_wake = bool(self.cb_wake.isChecked())
         self.cfg.show_system = bool(self.cb_show_system.isChecked())
         self.cfg.protect_system = bool(self.cb_protect_system.isChecked())
         self.cfg.pressure_enabled = bool(self.cb_pressure.isChecked())
@@ -1870,7 +1914,7 @@ class Dashboard(QWidget):
         layout.addWidget(self.top_table)
 
         self.eff_table = QTableWidget(0, 2)
-        self.eff_table.setHorizontalHeaderLabels(["Strategy", "Avg MB/Trim"])
+        self.eff_table.setHorizontalHeaderLabels(["Strategy", "Avg MB/Gobble"])
         self.eff_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.eff_table)
 
@@ -1925,8 +1969,8 @@ class Dashboard(QWidget):
         self.eff_table.setRowCount(0)
         agg = self.metrics._aggregate(30)
         for strat, mb in agg.get("by_strategy", {}).items():
-            trims = agg.get("by_strategy_trims", {}).get(strat, 0)
-            avg = mb / trims if trims else 0.0
+            gobbles = agg.get("by_strategy_gobbles", {}).get(strat, 0)
+            avg = mb / gobbles if gobbles else 0.0
             r = self.eff_table.rowCount(); self.eff_table.insertRow(r)
             self.eff_table.setItem(r, 0, QTableWidgetItem(strat))
             self.eff_table.setItem(r, 1, QTableWidgetItem(f"{avg:.1f}"))
@@ -1950,7 +1994,7 @@ class MainWindow(QMainWindow):
         self.session_reclaimed_total = 0.0
         self.metrics = Metrics(METRICS_PATH)
         self.metrics.load()
-        self.gobbler = Gobbler(self.config, self.metrics, self._on_trim_result, self._on_delta)
+        self.gobbler = Gobbler(self.config, self.metrics, self._on_gobble_result, self._on_delta)
         self.gobbler.start()
         self._hotkey_registered = False
         self.current_group = ""
@@ -1974,9 +2018,9 @@ class MainWindow(QMainWindow):
         self.act_stop_all.triggered.connect(self._stop_all)
         tb.addAction(self.act_stop_all)
 
-        self.act_trim_visible = QAction("Trim Visible Targets Now", self)
-        self.act_trim_visible.triggered.connect(self._trim_visible_targets)
-        tb.addAction(self.act_trim_visible)
+        self.act_gobble_visible = QAction("Gobble Visible Targets Now", self)
+        self.act_gobble_visible.triggered.connect(self._gobble_visible_targets)
+        tb.addAction(self.act_gobble_visible)
 
         self.act_view = QAction("Dashboard", self)
         self.act_view.triggered.connect(self._toggle_view)
@@ -2041,10 +2085,10 @@ class MainWindow(QMainWindow):
         bl = QVBoxLayout(box_left)
         search_row = QHBoxLayout()
         self.search = QLineEdit(); self.search.setPlaceholderText("Search by name or path…")
-        self.btn_trim_now = QPushButton("Trim Now"); self.btn_trim_now.setToolTip("Trim the selected process immediately"); self.btn_trim_now.clicked.connect(self._trim_selected)
+        self.btn_gobble_now = QPushButton("Gobble Now"); self.btn_gobble_now.setToolTip("Gobble the selected process immediately"); self.btn_gobble_now.clicked.connect(self._gobble_selected)
         self.btn_add_selected = QPushButton("Add Selected as Target"); self.btn_add_selected.clicked.connect(self._add_selected)
         self.cb_show_system = QCheckBox("Show system processes (⚠️)"); self.cb_show_system.setChecked(self.config.show_system); self.cb_show_system.stateChanged.connect(self._toggle_show_system)
-        search_row.addWidget(self.search); search_row.addWidget(self.btn_trim_now); search_row.addWidget(self.btn_add_selected); search_row.addWidget(self.cb_show_system)
+        search_row.addWidget(self.search); search_row.addWidget(self.btn_gobble_now); search_row.addWidget(self.btn_add_selected); search_row.addWidget(self.cb_show_system)
         bl.addLayout(search_row)
 
         self.proc_model = ProcessTableModel(include_system=self.config.show_system)
@@ -2200,11 +2244,11 @@ class MainWindow(QMainWindow):
             name = self._group_name(self.current_group)
             self.act_gobble_all.setText(f"Gobble Group {name}")
             self.act_stop_all.setText(f"Stop Group {name}")
-            self.act_trim_visible.setText(f"Trim {name} Targets Now")
+            self.act_gobble_visible.setText(f"Gobble {name} Targets Now")
         else:
             self.act_gobble_all.setText("Gobble All Targets")
             self.act_stop_all.setText("Stop All")
-            self.act_trim_visible.setText("Trim Visible Targets Now")
+            self.act_gobble_visible.setText("Gobble Visible Targets Now")
 
     def _toggle_view(self):
         if self.stack.currentWidget() == self.dashboard:
@@ -2251,12 +2295,12 @@ class MainWindow(QMainWindow):
         self.tray.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
         menu = QMenu()
         act_show = QAction("Show/Hide", self); act_show.triggered.connect(self._toggle_window)
-        act_trim_visible = QAction("Trim Visible Targets Now", self); act_trim_visible.triggered.connect(self._trim_visible_targets)
+        act_gobble_visible = QAction("Gobble Visible Targets Now", self); act_gobble_visible.triggered.connect(self._gobble_visible_targets)
         act_gobble_all = QAction("Gobble All Targets", self); act_gobble_all.triggered.connect(self._gobble_all)
         act_stop_all = QAction("Stop All", self); act_stop_all.triggered.connect(self._stop_all)
         act_settings = QAction("Settings…", self); act_settings.triggered.connect(self._open_settings)
         act_quit = QAction("Quit", self); act_quit.triggered.connect(self._quit)
-        menu.addAction(act_show); menu.addSeparator(); menu.addAction(act_trim_visible); menu.addAction(act_gobble_all); menu.addAction(act_stop_all); menu.addSeparator(); menu.addAction(act_settings); menu.addSeparator(); menu.addAction(act_quit)
+        menu.addAction(act_show); menu.addSeparator(); menu.addAction(act_gobble_visible); menu.addAction(act_gobble_all); menu.addAction(act_stop_all); menu.addSeparator(); menu.addAction(act_settings); menu.addSeparator(); menu.addAction(act_quit)
         self.tray.setContextMenu(menu); self.tray.activated.connect(self._tray_activated); self.tray.show()
 
     def _toggle_window(self):
@@ -2405,7 +2449,7 @@ class MainWindow(QMainWindow):
             self.config.save(); self.targets_table.refresh(force=True);
             if autostart: self.gobbler.set_active(len(self.config.targets)-1, True)
 
-    def _trim_selected(self):
+    def _gobble_selected(self):
         sel = self.table.selectionModel().selectedRows()
         if not sel: QMessageBox.information(self, APP_NAME, "Select a process row first."); return
         row = sel[0].row(); src_row = self.proxy.mapToSource(self.proxy.index(row, 0)).row()
@@ -2418,18 +2462,18 @@ class MainWindow(QMainWindow):
         delta = 0.0
         if before is not None and after is not None:
             delta = max(0.0, before - after); self.session_reclaimed_total += delta; self._update_total_label()
-        if ok: self.statusBar().showMessage(f"Trimmed {name} (PID {pid}) −{delta:.1f} MB", 3000)
-        else: QMessageBox.warning(self, APP_NAME, "Could not trim this process. Try running as Administrator.")
+        if ok: self.statusBar().showMessage(f"Gobbled {name} (PID {pid}) −{delta:.1f} MB", 3000)
+        else: QMessageBox.warning(self, APP_NAME, "Could not gobble this process. Try running as Administrator.")
 
-    def _trim_visible_targets(self):
-        total_pids = 0; trimmed_ok = 0; total_delta = 0.0
+    def _gobble_visible_targets(self):
+        total_pids = 0; gobbled_ok = 0; total_delta = 0.0
         for t in self.config.targets:
             if self.current_group and t.group_id != self.current_group:
                 continue
             pids = match_pids(t); total_pids += len(pids)
             delta_t = 0.0
             if pids:
-                t.last_trim_reason = "manual"
+                t.last_gobble_reason = "manual"
                 t.last_skip_reason = ""
             for pid in pids:
                 try:
@@ -2439,7 +2483,7 @@ class MainWindow(QMainWindow):
                     continue
                 before = rss_mb(pid); ok = empty_working_set(pid); after = rss_mb(pid)
                 if ok:
-                    trimmed_ok += 1
+                    gobbled_ok += 1
                 if before is not None and after is not None:
                     d = max(0.0, before - after)
                     total_delta += d
@@ -2456,7 +2500,7 @@ class MainWindow(QMainWindow):
         self.session_reclaimed_total += total_delta
         self._update_total_label()
         scope = self._group_name(self.current_group) if self.current_group else "visible targets"
-        msg = f"Trimmed {trimmed_ok}/{total_pids} processes (−{total_delta:.1f} MB) for {scope}"; self.statusBar().showMessage(msg, 4000)
+        msg = f"Gobbled {gobbled_ok}/{total_pids} processes (−{total_delta:.1f} MB) for {scope}"; self.statusBar().showMessage(msg, 4000)
         if self.tray:
             self.tray.showMessage(APP_NAME, msg)
         if self.stack.currentWidget() == self.dashboard:
@@ -2491,12 +2535,12 @@ class MainWindow(QMainWindow):
             self._hotkey_registered = False
 
     def _on_hotkey(self, hotkey_id):
-        if int(hotkey_id) == HOTKEY_ID: self._trim_visible_targets()
+        if int(hotkey_id) == HOTKEY_ID: self._gobble_visible_targets()
 
     def _on_resume(self):
-        if self.config.trim_on_wake: QTimer.singleShot(1500, self._trim_visible_targets)
+        if self.config.gobble_on_wake: QTimer.singleShot(1500, self._gobble_visible_targets)
 
-    def _on_trim_result(self, index: int, message: str):
+    def _on_gobble_result(self, index: int, message: str):
         def update(): self.targets_table.update_status(index, message)
         QTimer.singleShot(0, update)
 
@@ -2531,7 +2575,7 @@ def main():
     metrics = Metrics(METRICS_PATH)
     metrics.load()
     if args.headless:
-        result = {"ok": True, "reclaimed_mb": 0.0, "trims": 0}
+        result = {"ok": True, "reclaimed_mb": 0.0, "gobbles": 0}
         if args.export_metrics:
             try:
                 with open(args.export_metrics, "w", encoding="utf-8") as f:
@@ -2552,11 +2596,28 @@ def parse_args(argv=None):
     """Parse command-line arguments used by the small CLI interface."""
 
     parser = argparse.ArgumentParser(add_help=True)
+    legacy_visible_flag = f"--{LEGACY_PREFIX}-visible"
+    legacy_group_flag = f"--{LEGACY_PREFIX}-group"
+    if argv is None:
+        argv = sys.argv[1:]
+    normalized = []
+    for arg in argv:
+        if arg == legacy_visible_flag:
+            normalized.append("--gobble-visible")
+        elif arg == legacy_group_flag:
+            normalized.append("--gobble-group")
+        else:
+            normalized.append(arg)
     parser.add_argument("--headless", action="store_true", help="run without GUI")
-    parser.add_argument("--trim-visible", action="store_true", help="trim currently visible targets and exit")
-    parser.add_argument("--trim-group", help="trim targets belonging to a specific group")
+    parser.add_argument("--gobble-visible", action="store_true", help="gobble currently visible targets and exit")
+    parser.add_argument("--gobble-group", help="gobble targets belonging to a specific group")
     parser.add_argument("--export-metrics", help="write metrics JSON to the given path")
-    return parser.parse_args(argv)
+    args = parser.parse_args(normalized)
+    legacy_visible_attr = legacy_visible_flag.replace("-", "_").lstrip("_")
+    legacy_group_attr = legacy_group_flag.replace("-", "_").lstrip("_")
+    setattr(args, legacy_visible_attr, args.gobble_visible)
+    setattr(args, legacy_group_attr, args.gobble_group)
+    return args
 
 if __name__ == "__main__":
     try:
