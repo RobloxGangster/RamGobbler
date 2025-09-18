@@ -188,6 +188,7 @@ class MainWindow(QMainWindow):
         self.table.setUniformRowHeights(True)
         header = self.table.header()
         try:
+            header.setStretchLastSection(False)
             header.setSectionResizeMode(0, QHeaderView.Stretch)
             for col in range(1, self.proc_model.columnCount()):
                 header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
@@ -210,6 +211,7 @@ class MainWindow(QMainWindow):
         self._process_interaction.attach(self.table)
         self._process_interaction.attach(self.table.viewport())
         self._process_interaction.attach(self.table.verticalScrollBar())
+        self._process_interaction.attach(self.table.horizontalScrollBar())
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
         if hasattr(self.table, "expanded"):
             try:
