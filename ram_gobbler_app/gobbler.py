@@ -5,7 +5,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
-from typing import Callable, Deque, Dict, List, Optional, Tuple
+from typing import Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from .deps import psutil
 from .helpers import (
@@ -49,6 +49,7 @@ class Gobbler(threading.Thread):
         self._last_flush = time.time()
         self._reset_times: Dict[str, Deque[float]] = {}
         self._manual_requests: Deque[int] = deque()
+        self._forced_uids: Set[str] = set()
 
     def stop(self) -> None:
         """Signal the thread to terminate and persist metrics."""
@@ -133,6 +134,7 @@ class Gobbler(threading.Thread):
             now_dt = datetime.now()
             with self._lock:
                 targets_snapshot = list(self.config.targets)
+                forced_uids = set(self._forced_uids)
             global_ok, global_reason = self._allow_gobbling_now()
             batt_on, _ = on_battery()
             batt_factor = self.config.battery_slow_factor if (self.config.battery_mode == "slow" and batt_on) else 1.0
@@ -141,6 +143,7 @@ class Gobbler(threading.Thread):
             for index, target in enumerate(targets_snapshot):
                 if not target.active:
                     continue
+                forced = getattr(target, "uid", None) in forced_uids
                 # Jitter intervals per target so their timers do not fire in lock
                 # step, then slow them down when the machine is on battery.
                 base_interval = jittered_interval(target.interval_sec, target.key, self.config.jitter_pct)
@@ -161,7 +164,7 @@ class Gobbler(threading.Thread):
                             pass
                     self._record_event(index, {"ts": now_ts, "type": "skip", "reason": reason_cool})
                     continue
-                if not global_ok:
+                if not forced and not global_ok:
                     self.on_result(index, global_reason)
                     with self._lock:
                         try:
@@ -221,14 +224,17 @@ class Gobbler(threading.Thread):
 
         with self._lock:
             if 0 <= index < len(self.config.targets):
+                uid = getattr(self.config.targets[index], "uid", None)
                 self.config.targets[index].active = active
                 if not active:
                     if self._manual_requests:
                         self._manual_requests = deque(i for i in self._manual_requests if i != index)
+                    if uid:
+                        self._forced_uids.discard(uid)
                     self.config.targets[index].last_result = "Stopped"
                 self.config.save()
 
-    def trigger_now(self, index: int, *, ensure_active: bool = True) -> None:
+    def trigger_now(self, index: int, *, ensure_active: bool = True, continuous: bool = False) -> None:
         """Queue an immediate gobble for the specified target."""
 
         with self._lock:
@@ -236,6 +242,10 @@ class Gobbler(threading.Thread):
                 if ensure_active and not self.config.targets[index].active:
                     self.config.targets[index].active = True
                     self.config.save()
+                if continuous:
+                    uid = getattr(self.config.targets[index], "uid", None)
+                    if uid:
+                        self._forced_uids.add(uid)
                 self._manual_requests.append(index)
 
     def set_interval(self, index: int, seconds: int) -> None:
@@ -275,6 +285,9 @@ class Gobbler(threading.Thread):
 
         with self._lock:
             if 0 <= index < len(self.config.targets):
+                uid = getattr(self.config.targets[index], "uid", None)
+                if uid:
+                    self._forced_uids.discard(uid)
                 self.config.targets.pop(index)
                 self.config.save()
 
