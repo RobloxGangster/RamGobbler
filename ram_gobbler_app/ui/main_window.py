@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self.current_group = ""
         self._expanded_pids: Set[int] = set()
         self._process_gobble_tasks: Dict[Tuple[int, ...], Dict[str, object]] = {}
+        self._group_menu_actions: List[QAction] = []
 
         tb = QToolBar()
         tb.setIconSize(QSize(18, 18))
@@ -136,6 +137,20 @@ class MainWindow(QMainWindow):
         self.act_group_settings = QAction("Group Settings…", self)
         self.act_group_settings.triggered.connect(self._open_group_settings)
         tb.addAction(self.act_group_settings)
+
+        self.group_menu = QMenu("Select Group", self)
+        try:
+            self.group_menu.triggered.connect(self._handle_group_menu_triggered)
+        except Exception:
+            pass
+        self.act_group_selector = QAction("Group: All Targets", self)
+        try:
+            self.act_group_selector.setMenu(self.group_menu)
+        except Exception:
+            pass
+        tb.addAction(self.act_group_selector)
+        self._rebuild_group_menu()
+        self._update_group_selector_label()
 
         splitter = QSplitter()
         left = QWidget()
@@ -400,9 +415,18 @@ class MainWindow(QMainWindow):
     def _on_group_selected(self, gid: str):
         """Filter the targets table to the newly selected group."""
 
+        gid = gid or ""
+        if gid == self.current_group:
+            self._update_toolbar_scope()
+            self._update_group_selector_label()
+            self._update_group_menu_checks()
+            return
+
         self.current_group = gid
         self.targets_table.set_group_filter(gid)
         self._update_toolbar_scope()
+        self._update_group_selector_label()
+        self._update_group_menu_checks()
 
     def _group_name(self, gid: str) -> str:
         """Return a displayable name for ``gid``."""
@@ -413,6 +437,85 @@ class MainWindow(QMainWindow):
             if group.id == gid:
                 return group.name
         return gid
+
+    def _update_group_selector_label(self) -> None:
+        """Reflect the current group selection in the toolbar button."""
+
+        label = "All Targets" if not self.current_group else self._group_name(self.current_group)
+        try:
+            self.act_group_selector.setText(f"Group: {label}")
+        except Exception:
+            pass
+
+    def _handle_group_menu_triggered(self, action) -> None:
+        """Handle selection changes from the group dropdown menu."""
+
+        if action is None:
+            return
+        data_method = getattr(action, "data", None)
+        gid = ""
+        if callable(data_method):
+            try:
+                gid = data_method() or ""
+            except Exception:
+                gid = ""
+        self._on_group_selected(gid)
+
+    def _rebuild_group_menu(self) -> None:
+        """Populate the group dropdown with the latest configuration."""
+
+        if not hasattr(self, "group_menu"):
+            return
+
+        try:
+            self.group_menu.clear()
+        except Exception:
+            return
+
+        self._group_menu_actions = []
+
+        action_all = self.group_menu.addAction("All Targets")
+        try:
+            action_all.setData("")
+            action_all.setCheckable(True)
+        except Exception:
+            pass
+        self._group_menu_actions.append(action_all)
+
+        if getattr(self.config, "groups", None):
+            try:
+                self.group_menu.addSeparator()
+            except Exception:
+                pass
+        for group in getattr(self.config, "groups", []):
+            action = self.group_menu.addAction(group.name)
+            try:
+                action.setData(group.id)
+                action.setCheckable(True)
+            except Exception:
+                pass
+            self._group_menu_actions.append(action)
+
+        self._update_group_menu_checks()
+
+    def _update_group_menu_checks(self) -> None:
+        """Ensure the dropdown menu highlights the active group."""
+
+        target = self.current_group or ""
+        for action in getattr(self, "_group_menu_actions", []) or []:
+            set_checked = getattr(action, "setChecked", None)
+            data_method = getattr(action, "data", None)
+            if callable(set_checked):
+                gid = ""
+                if callable(data_method):
+                    try:
+                        gid = data_method() or ""
+                    except Exception:
+                        gid = ""
+                try:
+                    set_checked(gid == target)
+                except Exception:
+                    continue
 
     def _update_toolbar_scope(self):
         """Adjust toolbar labels to reflect the active group filter."""
@@ -745,6 +848,12 @@ class MainWindow(QMainWindow):
             prev_startup = self.config.startup_enabled
             self.config.load()
             self.proc_model.set_include_system(self.config.show_system)
+            selected_group = self.current_group
+            if selected_group and not any(
+                group.id == selected_group for group in self.config.groups
+            ):
+                selected_group = ""
+            self._rebuild_group_menu()
             self.targets_table.refresh(force=True)
             if self.config.theme != prev_theme:
                 self._apply_theme_choice(
@@ -761,6 +870,7 @@ class MainWindow(QMainWindow):
                 )
             self.cb_show_system.setChecked(self.config.show_system)
             self._apply_hotkey(self.config.hotkey)
+            self._on_group_selected(selected_group)
             if not startup_msg_shown:
                 self.statusBar().showMessage("Settings imported", 3000)
         except Exception as exc:
@@ -780,16 +890,25 @@ class MainWindow(QMainWindow):
         if not item:
             return
 
-        nodes = list(item.iter_nodes())
-        if not nodes:
-            QMessageBox.information(
-                self,
-                APP_NAME,
-                "No processes were found for that selection.",
-            )
+        self._add_process_item_as_target(item)
+
+    def _add_process_item_as_target(self, item, *, warn: bool = True) -> None:
+        """Open the add-target dialog for the provided process tree item."""
+
+        if item is None:
             return
 
-        if item.node and self.config.protect_system:
+        nodes = list(item.iter_nodes()) if hasattr(item, "iter_nodes") else []
+        if not nodes:
+            if warn:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "No processes were found for that selection.",
+                )
+            return
+
+        if warn and item.node and self.config.protect_system:
             try:
                 if is_system_process(psutil.Process(item.node.pid)):
                     QMessageBox.warning(
@@ -851,11 +970,12 @@ class MainWindow(QMainWindow):
             key_default, match_default = _pattern_for(primary_node)
 
         if not key_default:
-            QMessageBox.warning(
-                self,
-                APP_NAME,
-                "Couldn't determine how to match that process. Try selecting a different row.",
-            )
+            if warn:
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    "Couldn't determine how to match that process. Try selecting a different row.",
+                )
             return
 
         summary_nodes = [node for node in nodes if node.pid != primary_node.pid]
@@ -1156,46 +1276,19 @@ class MainWindow(QMainWindow):
         pids, display, primary, nodes = summary
         if not pids:
             return
-        key = tuple(sorted(pids))
         menu = QMenu(self)
-        task = self._process_gobble_tasks.get(key)
-        active = bool(task)
-        interval = self._current_process_interval(key) if active else None
-        toggle_label = "Stop Gobbling" if active else "Gobble Process"
-        act_toggle = menu.addAction(toggle_label)
-        if interval is not None or not active:
-            interval_label = "Change Interval…" if interval is not None else "Gobble Every…"
-            act_interval = menu.addAction(interval_label)
-        else:
-            act_interval = None
+        act_add_target = menu.addAction("Add Process as Target")
         path = self._resolve_process_path(primary, nodes)
-        act_copy = menu.addAction("Copy File Path") if path else None
+        act_copy = None
+        if path:
+            menu.addSeparator()
+            act_copy = menu.addAction("Copy File Path")
         exec_fn = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
         viewport = getattr(self.table, "viewport", None)
         global_pos = viewport().mapToGlobal(pos) if callable(viewport) else self.mapToGlobal(pos)
         chosen = exec_fn(global_pos) if exec_fn else None
-        if chosen == act_toggle:
-            if active:
-                self._stop_process_gobble(key)
-            else:
-                self._start_process_gobble(item)
-        elif act_interval is not None and chosen == act_interval:
-            default = interval if interval is not None else DEFAULT_INTERVAL
-            new_interval = self._prompt_process_interval(default)
-            if new_interval is None:
-                return
-            if active:
-                task = self._process_gobble_tasks.get(key)
-                if task is not None:
-                    task["interval"] = max(0.5, float(new_interval))
-                    display_name = str(task.get("display") or display)
-                    formatted = self._format_interval(new_interval)
-                    self.statusBar().showMessage(
-                        f"Updated interval for {display_name} to {formatted} seconds",
-                        3000,
-                    )
-            else:
-                self._start_process_gobble(item, interval=float(new_interval))
+        if chosen == act_add_target:
+            self._add_process_item_as_target(item)
         elif act_copy is not None and chosen == act_copy and path:
             self._copy_process_path(path, display)
 
@@ -1390,6 +1483,11 @@ class MainWindow(QMainWindow):
 
         dialog = GroupSettingsDialog(self)
         dialog.exec()
+        gid = self.current_group
+        if gid and not any(group.id == gid for group in self.config.groups):
+            gid = ""
+        self._rebuild_group_menu()
+        self._on_group_selected(gid)
 
     def _open_settings(self):
         """Open the settings dialog and persist any accepted changes."""
