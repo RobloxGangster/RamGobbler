@@ -899,6 +899,12 @@ class Gobbler(threading.Thread):
                 self.config.targets[index].autostart = bool(value)
                 self.config.save()
 
+    def set_group(self, index: int, gid: str):
+        with self._lock:
+            if 0 <= index < len(self.config.targets):
+                self.config.targets[index].group_id = gid or ""
+                self.config.save()
+
     def update_target(self, index: int, new_t: Target):
         with self._lock:
             if 0 <= index < len(self.config.targets):
@@ -1488,7 +1494,7 @@ class TargetsTable(QTableWidget):
         self.uid_to_row[uid] = row
         self._row_targets.append(uid)
 
-        group_item = QTableWidgetItem(self._group_name(t.group_id))
+        group_widget = self._create_group_widget(idx, t)
         target_item = QTableWidgetItem(t.key)
         match_item = QTableWidgetItem(t.match_by)
         status_text = ("Gobbling" if t.active else "Idle")
@@ -1529,7 +1535,7 @@ class TargetsTable(QTableWidget):
         h.addWidget(btn_edit)
         h.addWidget(btn_remove)
 
-        self.setItem(row, 0, group_item)
+        self.setCellWidget(row, 0, group_widget)
         self.setItem(row, 1, target_item)
         self.setItem(row, 2, match_item)
         self.setCellWidget(row, 3, autostart_cb)
@@ -1540,6 +1546,7 @@ class TargetsTable(QTableWidget):
         self.setCellWidget(row, 8, interval_widget)
         self.setCellWidget(row, 9, actions_widget)
 
+        self._register_interaction(group_widget)
         self._register_interaction(autostart_cb)
         self._register_interaction(interval_widget)
         self._register_interaction(actions_widget)
@@ -1547,6 +1554,55 @@ class TargetsTable(QTableWidget):
         self._register_interaction(btn_stop)
         self._register_interaction(btn_edit)
         self._register_interaction(btn_remove)
+
+    def _create_group_widget(self, idx: int, t: Target) -> QComboBox:
+        widget = QComboBox()
+        if hasattr(widget, "setEditable"):
+            widget.setEditable(False)
+        if hasattr(widget, "setSizeAdjustPolicy") and hasattr(QComboBox, "AdjustToContents"):
+            widget.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._populate_group_widget(widget, t.group_id)
+        signal = getattr(widget, "currentIndexChanged", None)
+        if signal is not None and hasattr(signal, "connect"):
+            signal.connect(lambda _=0, i=idx, w=widget: self._on_group_changed(i, w))
+        if hasattr(widget, "setToolTip"):
+            widget.setToolTip("Assign this target to a group")
+        return widget
+
+    def _populate_group_widget(self, widget: QComboBox, current_gid: str):
+        if not hasattr(widget, "clear"):
+            return
+        block_signals = getattr(widget, "blockSignals", None)
+        if callable(block_signals):
+            block_signals(True)
+        try:
+            widget.clear()
+            add_item = getattr(widget, "addItem", None)
+            if callable(add_item):
+                add_item("Ungrouped", "")
+                for grp in self.config.groups:
+                    add_item(grp.name, grp.id)
+            gid = current_gid or ""
+            find_data = getattr(widget, "findData", None)
+            index = find_data(gid) if callable(find_data) else -1
+            if index < 0 and gid and callable(add_item):
+                add_item(self._group_name(gid), gid)
+                index = find_data(gid) if callable(find_data) else -1
+            if index < 0:
+                index = 0
+            set_current = getattr(widget, "setCurrentIndex", None)
+            if callable(set_current):
+                set_current(index)
+        finally:
+            if callable(block_signals):
+                block_signals(False)
+
+    def _on_group_changed(self, index: int, widget: QComboBox):
+        current_index = widget.currentIndex() if hasattr(widget, "currentIndex") else 0
+        item_data = widget.itemData(current_index) if hasattr(widget, "itemData") else ""
+        gid = item_data or ""
+        self.gobbler.set_group(index, gid)
+        self.refresh(force=True)
 
     def _on_start(self, index: int):
         self.gobbler.set_active(index, True)
