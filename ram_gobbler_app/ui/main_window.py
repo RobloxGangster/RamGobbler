@@ -751,116 +751,150 @@ class MainWindow(QMainWindow):
         if not selection:
             QMessageBox.information(self, APP_NAME, "Select a process row first.")
             return
+
         proxy_index = selection[0]
         src_index = self.proxy.mapToSource(proxy_index)
         item = self.proc_model.node_for_index(src_index)
-        if not item or not item.node:
+        if not item:
             return
-        node = item.node
-        try:
-            if is_system_process(psutil.Process(node.pid)) and self.config.protect_system:
-                QMessageBox.warning(
-                    self,
-                    APP_NAME,
-                    "This looks like a system process. It's hidden/protected by default.",
-                )
-                return
-        except Exception:
-            pass
-        subtree_nodes = list(item.iter_nodes())
-        if not subtree_nodes:
-            return
-        seen = {(t.key.casefold(), t.match_by) for t in self.config.targets}
-        additions: List[Tuple[ProcessNode, str, str]] = []
-        for candidate in subtree_nodes:
-            if self.config.protect_system:
-                try:
-                    if is_system_process(psutil.Process(candidate.pid)):
-                        continue
-                except Exception:
-                    pass
-            key = candidate.exe or candidate.name or ""
-            if not key:
-                continue
-            match_by = "path" if candidate.exe else "name"
-            canonical = (key.casefold(), match_by)
-            if canonical in seen:
-                continue
-            additions.append((candidate, key, match_by))
-            seen.add(canonical)
-        if not additions:
+
+        nodes = list(item.iter_nodes())
+        if not nodes:
             QMessageBox.information(
                 self,
                 APP_NAME,
-                "Every process in this group is already configured as a target.",
+                "No processes were found for that selection.",
             )
             return
-        primary = None
-        for entry in additions:
-            if entry[0].pid == node.pid:
-                primary = entry
-                break
-        if primary is None:
-            primary = additions[0]
-        primary_node = primary[0]
-        summary_lines = [
-            f"{(n.name or n.exe or f'PID {n.pid}')} (PID {n.pid})"
-            for n, _key, _match in additions
-            if n.pid != primary_node.pid
-        ]
+
+        if item.node and self.config.protect_system:
+            try:
+                if is_system_process(psutil.Process(item.node.pid)):
+                    QMessageBox.warning(
+                        self,
+                        APP_NAME,
+                        "This looks like a system process. It's hidden/protected by default.",
+                    )
+                    return
+            except Exception:
+                pass
+
+        def _describe(node: ProcessNode) -> str:
+            return node.name or node.exe or f"PID {node.pid}"
+
+        def _pattern_for(node: ProcessNode) -> Tuple[str, str]:
+            if node.exe:
+                return node.exe, "path"
+            if node.name:
+                return node.name, "name"
+            if node.cmdline:
+                joined = " ".join(part for part in node.cmdline if part).strip()
+                if joined:
+                    return joined, "cmdline"
+            return "", "name"
+
+        def _common_attr(items: List[ProcessNode], attr: str) -> str:
+            values = [getattr(node, attr) for node in items if getattr(node, attr)]
+            if not values:
+                return ""
+            first = values[0]
+            first_key = first.casefold() if isinstance(first, str) else first
+            for value in values[1:]:
+                comp = value.casefold() if isinstance(value, str) else value
+                if comp != first_key:
+                    return ""
+            return first
+
+        primary_node = item.node or max(
+            nodes,
+            key=lambda n: (n.aggregate_rss_mb, n.rss_mb, -n.pid),
+        )
+
+        include_children_default = bool(primary_node.children)
+        key_default: str
+        match_default: str
+
+        if item.node is None:
+            shared_exe = _common_attr(nodes, "exe")
+            shared_name = _common_attr(nodes, "name")
+            if shared_exe:
+                key_default, match_default = shared_exe, "path"
+            elif shared_name:
+                key_default, match_default = shared_name, "name"
+            else:
+                key_default, match_default = _pattern_for(primary_node)
+            if len(nodes) > 1:
+                include_children_default = True
+        else:
+            key_default, match_default = _pattern_for(primary_node)
+
+        if not key_default:
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                "Couldn't determine how to match that process. Try selecting a different row.",
+            )
+            return
+
+        summary_nodes = [node for node in nodes if node.pid != primary_node.pid]
+        summary_lines: List[str] = []
+        for node in summary_nodes[:12]:
+            summary_lines.append(f"{_describe(node)} (PID {node.pid})")
+        remaining = len(summary_nodes) - len(summary_lines)
+        if remaining > 0:
+            summary_lines.append(f"…and {remaining} more")
+
         dialog = AddTargetDialog(
-            primary[1],
-            primary[2],
+            key_default,
+            match_default,
             self,
             summary=summary_lines or None,
-            include_children=bool(primary_node.children),
+            include_children=include_children_default,
         )
         if dialog.exec() != QDialog.Accepted:
             return
+
         key, match_by, interval, autostart, include_children = dialog.get_values()
+        key = key.strip()
         if not key:
             return
-        additions_to_create: List[Tuple[ProcessNode, str, str, bool]] = []
-        for candidate, default_key, default_match in additions:
-            if candidate.pid == primary_node.pid:
-                additions_to_create.append(
-                    (candidate, key, match_by, bool(include_children or candidate.children))
-                )
-            else:
-                additions_to_create.append(
-                    (candidate, default_key, default_match, bool(candidate.children))
-                )
+
+        canonical = (key.casefold(), match_by)
         existing = {(t.key.casefold(), t.match_by) for t in self.config.targets}
-        new_indices: List[int] = []
-        added_count = 0
-        for candidate, key_val, match_val, include_flag in additions_to_create:
-            canonical = (key_val.casefold(), match_val)
-            if canonical in existing or not key_val:
-                continue
-            target = Target(
-                key=key_val,
-                match_by=match_val,
-                interval_sec=interval,
-                autostart=autostart,
-                include_children=include_flag,
+        if canonical in existing:
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "That target already exists. Adjust the pattern or remove the previous entry.",
             )
-            self.config.targets.append(target)
-            new_index = len(self.config.targets) - 1
-            new_indices.append(new_index)
-            existing.add(canonical)
-            added_count += 1
-        if added_count == 0:
-            QMessageBox.information(self, APP_NAME, "No new targets were added.")
             return
+
+        target = Target(
+            key=key,
+            match_by=match_by,
+            interval_sec=interval,
+            autostart=autostart,
+            include_children=bool(include_children),
+        )
+        if self.current_group:
+            target.group_id = self.current_group
+
+        self.config.targets.append(target)
+        new_index = len(self.config.targets) - 1
         self.config.save()
         self.targets_table.refresh(force=True)
+
         if autostart:
-            for idx in new_indices:
-                self.gobbler.set_active(idx, True)
-        label = primary_node.name or primary_node.exe or f"PID {primary_node.pid}"
-        plural = "targets" if added_count > 1 else "target"
+            self.gobbler.set_active(new_index, True)
+
+        label = item.display_name() or _describe(primary_node)
+        if summary_nodes:
+            count = len(summary_nodes)
+            suffix = f" with {count} related process{'es' if count != 1 else ''}"
+        else:
+            suffix = ""
         self.statusBar().showMessage(
-            f"Added {added_count} {plural} for {label}",
+            f"Added target for {label}{suffix}",
             3000,
         )
 
@@ -874,9 +908,11 @@ class MainWindow(QMainWindow):
         proxy_index = selection[0]
         src_index = self.proxy.mapToSource(proxy_index)
         item = self.proc_model.node_for_index(src_index)
-        if not item or not item.node:
+        if not item:
             return
-        node = item.node
+        nodes = list(item.iter_nodes())
+        if not nodes:
+            return
         pids = []
         seen: Set[int] = set()
         for pid in item.all_pids():
@@ -886,6 +922,13 @@ class MainWindow(QMainWindow):
         if not pids:
             return
         display = item.display_name()
+        if not display:
+            first_node = nodes[0]
+            base_label = first_node.name or first_node.exe or f"PID {first_node.pid}"
+            if len(nodes) > 1:
+                display = f"{base_label} and {len(nodes) - 1} more"
+            else:
+                display = base_label
         reclaimed = 0.0
         processed = 0
         skipped = 0
