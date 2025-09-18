@@ -7,7 +7,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
-from ..constants import APP_NAME, CONFIG_PATH, METRICS_PATH
+from ..constants import APP_NAME, CONFIG_PATH, METRICS_PATH, DEFAULT_INTERVAL
 from ..deps import psutil
 from ..gobbler import Gobbler
 from ..helpers import empty_working_set, rss_mb
@@ -18,6 +18,7 @@ from ..platform import (
     QApplication,
     QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -57,6 +58,7 @@ from .components import (
     SettingsDialog,
     TargetsTable,
     _InteractionWatcher,
+    IntervalEditor,
 )
 from metrics import Metrics
 
@@ -978,6 +980,49 @@ class MainWindow(QMainWindow):
                 return node.exe
         return ""
 
+    def _format_interval(self, seconds: float) -> str:
+        """Format ``seconds`` for human-friendly status messages."""
+
+        rounded = round(float(seconds), 2)
+        if abs(rounded - round(rounded)) < 1e-6:
+            return str(int(round(rounded)))
+        text = f"{rounded:.1f}"
+        return text.rstrip("0").rstrip(".")
+
+    def _current_process_interval(self, key: Tuple[int, ...]) -> Optional[float]:
+        """Return the active interval for ``key`` if one is configured."""
+
+        task = self._process_gobble_tasks.get(key)
+        if not task:
+            return None
+        value = task.get("interval")
+        if isinstance(value, (int, float)):
+            return max(0.5, float(value))
+        return None
+
+    def _prompt_process_interval(self, current: Optional[float] = None) -> Optional[float]:
+        """Show a dialog requesting a gobble interval in seconds."""
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Process Gobble Interval")
+        layout = QVBoxLayout(dialog)
+        label = QLabel("Gobble this process every (seconds):", dialog)
+        layout.addWidget(label)
+        editor = IntervalEditor(
+            current if current is not None else DEFAULT_INTERVAL,
+            minimum=0.5,
+            maximum=600.0,
+            step=0.5,
+        )
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() == QDialog.Accepted:
+            return float(editor.value())
+        return None
+
     def _perform_manual_gobble(
         self, pids: List[int], stop_event: Optional[threading.Event] = None
     ) -> Tuple[int, int, float, bool]:
@@ -1019,6 +1064,7 @@ class MainWindow(QMainWindow):
         reclaimed: float,
         *,
         aborted: bool = False,
+        update_totals: bool = True,
     ) -> None:
         """Update UI elements after a manual gobble completes."""
 
@@ -1027,7 +1073,7 @@ class MainWindow(QMainWindow):
             if processed > 0:
                 plural = "processes" if processed != 1 else "process"
                 details.append(f"{processed} {plural}")
-            if reclaimed > 0:
+            if reclaimed > 0 and update_totals:
                 self.session_reclaimed_total += reclaimed
                 self._update_total_label()
                 details.append(f"−{reclaimed:.1f} MB")
@@ -1039,7 +1085,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(message, 3000)
             return
 
-        if reclaimed > 0:
+        if reclaimed > 0 and update_totals:
             self.session_reclaimed_total += reclaimed
             self._update_total_label()
 
@@ -1100,9 +1146,16 @@ class MainWindow(QMainWindow):
             return
         key = tuple(sorted(pids))
         menu = QMenu(self)
-        active = key in self._process_gobble_tasks
+        task = self._process_gobble_tasks.get(key)
+        active = bool(task)
+        interval = self._current_process_interval(key) if active else None
         toggle_label = "Stop Gobbling" if active else "Gobble Process"
         act_toggle = menu.addAction(toggle_label)
+        if interval is not None or not active:
+            interval_label = "Change Interval…" if interval is not None else "Gobble Every…"
+            act_interval = menu.addAction(interval_label)
+        else:
+            act_interval = None
         path = self._resolve_process_path(primary, nodes)
         act_copy = menu.addAction("Copy File Path") if path else None
         exec_fn = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
@@ -1114,10 +1167,27 @@ class MainWindow(QMainWindow):
                 self._stop_process_gobble(key)
             else:
                 self._start_process_gobble(item)
+        elif act_interval is not None and chosen == act_interval:
+            default = interval if interval is not None else DEFAULT_INTERVAL
+            new_interval = self._prompt_process_interval(default)
+            if new_interval is None:
+                return
+            if active:
+                task = self._process_gobble_tasks.get(key)
+                if task is not None:
+                    task["interval"] = max(0.5, float(new_interval))
+                    display_name = str(task.get("display") or display)
+                    formatted = self._format_interval(new_interval)
+                    self.statusBar().showMessage(
+                        f"Updated interval for {display_name} to {formatted} seconds",
+                        3000,
+                    )
+            else:
+                self._start_process_gobble(item, interval=float(new_interval))
         elif act_copy is not None and chosen == act_copy and path:
             self._copy_process_path(path, display)
 
-    def _start_process_gobble(self, item) -> None:
+    def _start_process_gobble(self, item, *, interval: Optional[float] = None) -> None:
         """Kick off a background gobble for ``item``."""
 
         summary = self._process_item_summary(item, warn=True)
@@ -1127,30 +1197,73 @@ class MainWindow(QMainWindow):
         if not pids:
             return
         key = tuple(sorted(pids))
-        if key in self._process_gobble_tasks:
+        existing = self._process_gobble_tasks.get(key)
+        if existing and interval is not None:
+            existing["interval"] = max(0.5, float(interval))
+            formatted = self._format_interval(interval)
+            display_name = str(existing.get("display") or display)
+            self.statusBar().showMessage(
+                f"Updated interval for {display_name} to {formatted} seconds",
+                3000,
+            )
+            return
+        if existing:
             return
 
         stop_event = threading.Event()
-        self._process_gobble_tasks[key] = {"event": stop_event, "display": display}
+        task: Dict[str, object] = {"event": stop_event, "display": display}
+        if interval is not None:
+            task["interval"] = max(0.5, float(interval))
+        self._process_gobble_tasks[key] = task
 
         def worker():
-            processed = skipped = 0
-            reclaimed = 0.0
-            cancelled = False
+            processed_total = skipped_total = 0
+            reclaimed_total = 0.0
+            aborted = False
             try:
-                processed, skipped, reclaimed, cancelled = self._perform_manual_gobble(
-                    pids, stop_event
-                )
+                while not stop_event.is_set():
+                    processed, skipped, reclaimed, cancelled = self._perform_manual_gobble(
+                        pids, stop_event
+                    )
+                    processed_total += processed
+                    skipped_total += skipped
+                    reclaimed_total += reclaimed
+                    if cancelled and stop_event.is_set():
+                        aborted = True
+                        break
+
+                    def deliver(p=processed, s=skipped, r=reclaimed, name=display):
+                        self._handle_manual_gobble_result(name, p, s, r)
+
+                    QTimer.singleShot(0, deliver)
+
+                    wait_interval = self._current_process_interval(key)
+                    if wait_interval is None:
+                        break
+                    if stop_event.wait(wait_interval):
+                        aborted = True
+                        break
             finally:
                 def finish():
                     self._process_gobble_tasks.pop(key, None)
-                    self._handle_manual_gobble_result(
-                        display, processed, skipped, reclaimed, aborted=cancelled
-                    )
+                    if aborted:
+                        self._handle_manual_gobble_result(
+                            display,
+                            processed_total,
+                            skipped_total,
+                            reclaimed_total,
+                            aborted=True,
+                            update_totals=False,
+                        )
 
                 QTimer.singleShot(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
+        if interval is not None:
+            formatted = self._format_interval(interval)
+            self.statusBar().showMessage(
+                f"Gobbling {display} every {formatted} seconds", 3000
+            )
 
     def _stop_process_gobble(self, key: Tuple[int, ...]) -> None:
         """Request cancellation of an in-flight manual gobble."""
