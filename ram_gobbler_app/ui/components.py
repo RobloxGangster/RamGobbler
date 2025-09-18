@@ -1736,7 +1736,7 @@ class SettingsDialog(QDialog):
             self.kse.setKeySequence(config.hotkey)
         self.cb_wake = QCheckBox("Gobble on wake from sleep")
         self.cb_wake.setChecked(bool(config.gobble_on_wake))
-        self.cb_show_system = QCheckBox("Show system processes")
+        self.cb_show_system = QCheckBox("Show system processes (⚠️)")
         self.cb_show_system.setChecked(bool(config.show_system))
         self.cb_protect_system = QCheckBox("Protect system processes")
         self.cb_protect_system.setChecked(bool(config.protect_system))
