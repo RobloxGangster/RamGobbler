@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 
 from ..constants import APP_NAME, CONFIG_PATH, METRICS_PATH
 from ..deps import psutil
@@ -29,7 +29,7 @@ from ..platform import (
     QStackedWidget,
     QStyle,
     QSystemTrayIcon,
-    QTableView,
+    QTreeView,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -44,14 +44,15 @@ from ..platform import (
     UnregisterHotKey,
     HOTKEY_ID,
 )
-from ..processes import match_pids
+from ..processes import ProcessNode, match_pids
 from ..startup import is_startup_enabled, set_startup_enabled
 from ..system import is_system_process
 from .components import (
     AddTargetDialog,
     Dashboard,
     GroupSettingsDialog,
-    ProcessTableModel,
+    ProcessFilterProxyModel,
+    ProcessTreeModel,
     SettingsDialog,
     TargetsTable,
     _InteractionWatcher,
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
         self.gobbler.start()
         self._hotkey_registered = False
         self.current_group = ""
+        self._expanded_pids: Set[int] = set()
 
         tb = QToolBar()
         tb.setIconSize(QSize(18, 18))
@@ -164,16 +166,23 @@ class MainWindow(QMainWindow):
         search_row.addWidget(self.cb_show_system)
         bl.addLayout(search_row)
 
-        self.proc_model = ProcessTableModel(include_system=self.config.show_system)
-        self.proxy = QSortFilterProxyModel()
+        self.proc_model = ProcessTreeModel(include_system=self.config.show_system)
+        self.proxy = ProcessFilterProxyModel()
         self.proxy.setSourceModel(self.proc_model)
         self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy.setFilterKeyColumn(-1)
-        self.table = QTableView()
+        self.table = QTreeView()
         self.table.setModel(self.proxy)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setUniformRowHeights(True)
+        header = self.table.header()
+        try:
+            header.setSectionResizeMode(0, QHeaderView.Stretch)
+            for col in range(1, self.proc_model.columnCount()):
+                header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        except Exception:
+            self.table.header().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         bl.addWidget(self.table)
@@ -182,6 +191,16 @@ class MainWindow(QMainWindow):
         self._process_interaction.attach(self.table.viewport())
         self._process_interaction.attach(self.table.verticalScrollBar())
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
+        if hasattr(self.table, "expanded"):
+            try:
+                self.table.expanded.connect(self._on_tree_expanded)
+            except Exception:
+                pass
+        if hasattr(self.table, "collapsed"):
+            try:
+                self.table.collapsed.connect(self._on_tree_collapsed)
+            except Exception:
+                pass
 
         rv = QVBoxLayout(right)
         box_right = QGroupBox("Targets")
@@ -346,6 +365,7 @@ class MainWindow(QMainWindow):
         self.config.save()
 
         def done():
+            self._restore_expanded()
             self._select_pid(pid)
             self._restore_scrollbar(bar, scroll)
 
@@ -401,9 +421,9 @@ class MainWindow(QMainWindow):
                 QMainWindow { background: #f5f7fb; }
                 QGroupBox { color: #0b1220; border: 1px solid #d8dce6; border-radius: 12px; margin-top: 10px; }
                 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }
+                QLabel, QLineEdit, QTreeView, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }
                 QLineEdit { border: 1px solid #cbd2e1; border-radius: 8px; padding: 8px; }
-                QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }
+                QTreeView, QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }
                 QToolBar { background: #f5f7fb; border-bottom: 1px solid #e5e9f2; }
                 QPushButton { background: #ecf1fb; color: #0b1220; border: 1px solid #d8dce6; border-radius: 10px; padding: 6px 12px; }
                 QPushButton:hover { background: #e3ebfb; }
@@ -417,9 +437,9 @@ class MainWindow(QMainWindow):
                 QMainWindow { background: #0f1115; }
                 QGroupBox { color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 12px; margin-top: 10px; }
                 QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }
+                QLabel, QLineEdit, QTreeView, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }
                 QLineEdit { border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
-                QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }
+                QTreeView, QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }
                 QToolBar { background: #0f1115; border-bottom: 1px solid #2a2f3a; }
                 QPushButton { background: #253042; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 10px; padding: 6px 12px; }
                 QPushButton:hover { background: #2b3a55; }
@@ -499,6 +519,7 @@ class MainWindow(QMainWindow):
         proc_scroll = bar.value() if bar else 0
 
         def done():
+            self._restore_expanded()
             self._select_pid(pid)
             self._restore_scrollbar(bar, proc_scroll)
 
@@ -516,6 +537,7 @@ class MainWindow(QMainWindow):
         scroll = bar.value() if bar else 0
 
         def done():
+            self._restore_expanded()
             self._select_pid(pid)
             self._restore_scrollbar(bar, scroll)
 
@@ -532,25 +554,28 @@ class MainWindow(QMainWindow):
         src = self.proxy.mapToSource(idx)
         if not src.isValid():
             return None
-        try:
-            return self.proc_model.row_at(src.row())[1]
-        except Exception:
+        item = self.proc_model.node_for_index(src)
+        if not item or not item.node:
             return None
+        return item.node.pid
 
     def _select_pid(self, pid: Optional[int]):
         """Highlight ``pid`` in the process table if it exists."""
 
         if pid is None:
             return
-        for row in range(self.proc_model.rowCount()):
-            try:
-                if self.proc_model.row_at(row)[1] == pid:
-                    src_index = self.proc_model.index(row, 0)
-                    proxy_index = self.proxy.mapFromSource(src_index)
-                    self.table.selectRow(proxy_index.row())
-                    break
-            except Exception:
-                continue
+        src_index = self.proc_model.index_for_pid(pid)
+        if not src_index.isValid():
+            return
+        proxy_index = self.proxy.mapFromSource(src_index)
+        if not proxy_index.isValid():
+            return
+        self._expand_ancestors(proxy_index)
+        self.table.setCurrentIndex(proxy_index)
+        try:
+            self.table.scrollTo(proxy_index)
+        except Exception:
+            pass
 
     def _restore_scrollbar(self, bar, value: int):
         """Restore ``bar`` to ``value`` without firing change handlers."""
@@ -569,6 +594,66 @@ class MainWindow(QMainWindow):
         if hasattr(QTimer, "singleShot"):
             QTimer.singleShot(0, apply)
             QTimer.singleShot(120, apply)
+
+    def _expand_ancestors(self, proxy_index):
+        """Ensure ancestors of ``proxy_index`` are expanded."""
+
+        parent = proxy_index.parent()
+        stack = []
+        while parent.isValid():
+            stack.append(parent)
+            parent = parent.parent()
+        while stack:
+            idx = stack.pop()
+            src_parent = self.proxy.mapToSource(idx)
+            item = self.proc_model.node_for_index(src_parent)
+            if item and item.node:
+                try:
+                    self.table.expand(idx)
+                except Exception:
+                    pass
+                self._expanded_pids.add(item.node.pid)
+
+    def _restore_expanded(self):
+        """Re-expand tree nodes that were previously expanded."""
+
+        if not self._expanded_pids:
+            return
+        keep: Set[int] = set()
+        for pid in list(self._expanded_pids):
+            src_index = self.proc_model.index_for_pid(pid)
+            if not src_index.isValid():
+                continue
+            proxy_index = self.proxy.mapFromSource(src_index)
+            if not proxy_index.isValid():
+                continue
+            self._expand_ancestors(proxy_index)
+            try:
+                self.table.expand(proxy_index)
+            except Exception:
+                continue
+            item = self.proc_model.node_for_index(src_index)
+            if item and item.node:
+                keep.add(item.node.pid)
+        self._expanded_pids = keep
+
+    def _on_tree_expanded(self, index):
+        """Track expanded nodes so state can be restored after refreshes."""
+
+        src = self.proxy.mapToSource(index)
+        item = self.proc_model.node_for_index(src)
+        if item and item.node:
+            self._expanded_pids.add(item.node.pid)
+
+    def _on_tree_collapsed(self, index):
+        """Remove collapsed nodes (and descendants) from the remembered set."""
+
+        src = self.proxy.mapToSource(index)
+        item = self.proc_model.node_for_index(src)
+        if not item or not item.node:
+            return
+        for pid in item.all_pids():
+            self._expanded_pids.discard(pid)
 
     def _gobble_all(self):
         """Activate gobbling for every target within scope."""
@@ -662,11 +747,14 @@ class MainWindow(QMainWindow):
         if not selection:
             QMessageBox.information(self, APP_NAME, "Select a process row first.")
             return
-        row = selection[0].row()
-        src_row = self.proxy.mapToSource(self.proxy.index(row, 0)).row()
-        name, pid, rss, exe = self.proc_model.row_at(src_row)
+        proxy_index = selection[0]
+        src_index = self.proxy.mapToSource(proxy_index)
+        item = self.proc_model.node_for_index(src_index)
+        if not item or not item.node:
+            return
+        node = item.node
         try:
-            if is_system_process(psutil.Process(pid)) and self.config.protect_system:
+            if is_system_process(psutil.Process(node.pid)) and self.config.protect_system:
                 QMessageBox.warning(
                     self,
                     APP_NAME,
@@ -675,20 +763,102 @@ class MainWindow(QMainWindow):
                 return
         except Exception:
             pass
-        match_by = "path" if exe else "name"
-        key = exe or name
-        dialog = AddTargetDialog(key, match_by, self)
-        if dialog.exec() == QDialog.Accepted:
-            key, match_by, interval, autostart = dialog.get_values()
+        subtree_nodes = list(item.iter_nodes())
+        if not subtree_nodes:
+            return
+        seen = {(t.key.casefold(), t.match_by) for t in self.config.targets}
+        additions: List[Tuple[ProcessNode, str, str]] = []
+        for candidate in subtree_nodes:
+            if self.config.protect_system:
+                try:
+                    if is_system_process(psutil.Process(candidate.pid)):
+                        continue
+                except Exception:
+                    pass
+            key = candidate.exe or candidate.name or ""
             if not key:
-                return
-            self.config.targets.append(
-                Target(key=key, match_by=match_by, interval_sec=interval, autostart=autostart)
+                continue
+            match_by = "path" if candidate.exe else "name"
+            canonical = (key.casefold(), match_by)
+            if canonical in seen:
+                continue
+            additions.append((candidate, key, match_by))
+            seen.add(canonical)
+        if not additions:
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "Every process in this group is already configured as a target.",
             )
-            self.config.save()
-            self.targets_table.refresh(force=True)
-            if autostart:
-                self.gobbler.set_active(len(self.config.targets) - 1, True)
+            return
+        primary = None
+        for entry in additions:
+            if entry[0].pid == node.pid:
+                primary = entry
+                break
+        if primary is None:
+            primary = additions[0]
+        primary_node = primary[0]
+        summary_lines = [
+            f"{(n.name or n.exe or f'PID {n.pid}')} (PID {n.pid})"
+            for n, _key, _match in additions
+            if n.pid != primary_node.pid
+        ]
+        dialog = AddTargetDialog(
+            primary[1],
+            primary[2],
+            self,
+            summary=summary_lines or None,
+            include_children=bool(primary_node.children),
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        key, match_by, interval, autostart, include_children = dialog.get_values()
+        if not key:
+            return
+        additions_to_create: List[Tuple[ProcessNode, str, str, bool]] = []
+        for candidate, default_key, default_match in additions:
+            if candidate.pid == primary_node.pid:
+                additions_to_create.append(
+                    (candidate, key, match_by, bool(include_children or candidate.children))
+                )
+            else:
+                additions_to_create.append(
+                    (candidate, default_key, default_match, bool(candidate.children))
+                )
+        existing = {(t.key.casefold(), t.match_by) for t in self.config.targets}
+        new_indices: List[int] = []
+        added_count = 0
+        for candidate, key_val, match_val, include_flag in additions_to_create:
+            canonical = (key_val.casefold(), match_val)
+            if canonical in existing or not key_val:
+                continue
+            target = Target(
+                key=key_val,
+                match_by=match_val,
+                interval_sec=interval,
+                autostart=autostart,
+                include_children=include_flag,
+            )
+            self.config.targets.append(target)
+            new_index = len(self.config.targets) - 1
+            new_indices.append(new_index)
+            existing.add(canonical)
+            added_count += 1
+        if added_count == 0:
+            QMessageBox.information(self, APP_NAME, "No new targets were added.")
+            return
+        self.config.save()
+        self.targets_table.refresh(force=True)
+        if autostart:
+            for idx in new_indices:
+                self.gobbler.set_active(idx, True)
+        label = primary_node.name or primary_node.exe or f"PID {primary_node.pid}"
+        plural = "targets" if added_count > 1 else "target"
+        self.statusBar().showMessage(
+            f"Added {added_count} {plural} for {label}",
+            3000,
+        )
 
     def _gobble_selected(self):
         """Immediately gobble the highlighted process."""
@@ -697,27 +867,60 @@ class MainWindow(QMainWindow):
         if not selection:
             QMessageBox.information(self, APP_NAME, "Select a process row first.")
             return
-        row = selection[0].row()
-        src_row = self.proxy.mapToSource(self.proxy.index(row, 0)).row()
-        name, pid, rss, exe = self.proc_model.row_at(src_row)
-        try:
-            if self.config.protect_system and is_system_process(psutil.Process(pid)):
-                QMessageBox.warning(self, APP_NAME, "Skipping protected system process.")
-                return
-        except Exception:
-            pass
-        before = rss_mb(pid)
-        ok = empty_working_set(pid)
-        after = rss_mb(pid)
-        delta = 0.0
-        if before is not None and after is not None:
-            delta = max(0.0, before - after)
-            self.session_reclaimed_total += delta
+        proxy_index = selection[0]
+        src_index = self.proxy.mapToSource(proxy_index)
+        item = self.proc_model.node_for_index(src_index)
+        if not item or not item.node:
+            return
+        node = item.node
+        pids = []
+        seen: Set[int] = set()
+        for pid in item.all_pids():
+            if pid not in seen:
+                seen.add(pid)
+                pids.append(pid)
+        if not pids:
+            return
+        display = item.display_name()
+        reclaimed = 0.0
+        processed = 0
+        skipped = 0
+        for pid in pids:
+            try:
+                if self.config.protect_system and is_system_process(psutil.Process(pid)):
+                    skipped += 1
+                    continue
+            except Exception:
+                pass
+            before = rss_mb(pid)
+            ok = empty_working_set(pid)
+            after = rss_mb(pid)
+            if ok:
+                processed += 1
+            if before is not None and after is not None:
+                reclaimed += max(0.0, before - after)
+        if reclaimed > 0:
+            self.session_reclaimed_total += reclaimed
             self._update_total_label()
-        if ok:
-            self.statusBar().showMessage(f"Gobbled {name} (PID {pid}) −{delta:.1f} MB", 3000)
-        else:
-            QMessageBox.warning(self, APP_NAME, "Could not gobble this process. Try running as Administrator.")
+        if processed == 0:
+            if skipped:
+                QMessageBox.information(
+                    self,
+                    APP_NAME,
+                    "All processes in this group are protected and were skipped.",
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    APP_NAME,
+                    "Could not gobble any process in this group. Try running as Administrator.",
+                )
+            return
+        plural = "processes" if processed > 1 else "process"
+        msg = f"Gobbled {display} ({processed} {plural}) −{reclaimed:.1f} MB"
+        if skipped:
+            msg += f" ({skipped} protected skipped)"
+        self.statusBar().showMessage(msg, 3000)
 
     def _gobble_visible_targets(self):
         """Manually gobble all targets that currently match their rules."""
@@ -725,10 +928,17 @@ class MainWindow(QMainWindow):
         total_pids = 0
         gobbled_ok = 0
         total_delta = 0.0
+        seen_pids: Set[int] = set()
         for target in self.config.targets:
             if self.current_group and target.group_id != self.current_group:
                 continue
-            pids = match_pids(target)
+            raw_pids = match_pids(target)
+            pids = []
+            for pid in raw_pids:
+                if pid in seen_pids:
+                    continue
+                seen_pids.add(pid)
+                pids.append(pid)
             total_pids += len(pids)
             delta_t = 0.0
             if pids:
