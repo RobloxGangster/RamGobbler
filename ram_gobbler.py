@@ -57,7 +57,7 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from collections import deque
 from itertools import zip_longest
-from typing import Dict, List, Optional, Tuple, Deque, Callable
+from typing import Any, Dict, List, Optional, Tuple, Deque, Callable
 from groups import group_totals
 from metrics import Metrics
 from matching import matches
@@ -1061,35 +1061,57 @@ class Sparkline(QWidget):
 
 # --- Groups sidebar ---------------------------------------------------------
 class GroupsSidebar(QWidget):
-    def __init__(self, config: Config, parent=None):
+    def __init__(self, config: Config, controller: Any, parent=None):
         super().__init__(parent)
         self.config = config
+        self._controller = controller
+        self._current_group_id = ""
+        self._suspend_emit = False
+
         layout = QVBoxLayout(self)
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self._emit_selection)
         layout.addWidget(self.list)
+
         btn_row = QHBoxLayout()
         self.btn_add = QPushButton("Add")
         self.btn_rename = QPushButton("Rename")
         self.btn_delete = QPushButton("Delete")
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
-        for b in (self.btn_add, self.btn_rename, self.btn_delete, self.btn_start, self.btn_stop):
-            btn_row.addWidget(b)
+        for btn in (self.btn_add, self.btn_rename, self.btn_delete, self.btn_start, self.btn_stop):
+            btn_row.addWidget(btn)
         layout.addLayout(btn_row)
+
         self.btn_add.clicked.connect(self._add)
         self.btn_rename.clicked.connect(self._rename)
         self.btn_delete.clicked.connect(self._delete)
-        self.btn_start.clicked.connect(lambda: parent._gobble_all())
-        self.btn_stop.clicked.connect(lambda: parent._stop_all())
-        self.refresh()
+        self.btn_start.clicked.connect(self._on_start)
+        self.btn_stop.clicked.connect(self._on_stop)
 
-    def refresh(self):
-        self.list.clear()
-        self.list.addItem("All")
-        for g in self.config.groups:
-            self.list.addItem(g.name)
-        self.list.setCurrentRow(0)
+        self.refresh(suppress_emit=True)
+
+    def refresh(self, suppress_emit: bool = False):
+        current = self._current_group_id
+        self._suspend_emit = suppress_emit
+        self.list.blockSignals(True)
+        try:
+            self.list.clear()
+            self.list.addItem("All")
+            for g in self.config.groups:
+                self.list.addItem(g.name)
+            if current and not self._select_row_for_id(current):
+                self.list.setCurrentRow(0)
+            elif not current:
+                self.list.setCurrentRow(0)
+        finally:
+            self.list.blockSignals(False)
+        self._emit_selection(self.list.currentRow())
+        self._suspend_emit = False
+
+    def set_current_group(self, gid: str, suppress_emit: bool = False):
+        self._current_group_id = gid or ""
+        self.refresh(suppress_emit=suppress_emit)
 
     def current_group_id(self) -> str:
         row = self.list.currentRow()
@@ -1100,10 +1122,35 @@ class GroupsSidebar(QWidget):
         except IndexError:
             return ""
 
+    def _select_row_for_id(self, gid: str) -> bool:
+        for idx, grp in enumerate(self.config.groups, start=1):
+            if grp.id == gid:
+                self.list.setCurrentRow(idx)
+                return True
+        return False
+
     def _emit_selection(self, _):
         gid = self.current_group_id()
-        if hasattr(self.parent(), "_on_group_selected"):
-            self.parent()._on_group_selected(gid)
+        self._current_group_id = gid
+        if self._suspend_emit:
+            return
+        controller = getattr(self, "_controller", None)
+        if controller and hasattr(controller, "_on_group_selected"):
+            controller._on_group_selected(gid)
+
+    def _controller_call(self, name: str):
+        controller = getattr(self, "_controller", None)
+        if not controller:
+            return
+        func = getattr(controller, name, None)
+        if callable(func):
+            func()
+
+    def _on_start(self):
+        self._controller_call("_gobble_all")
+
+    def _on_stop(self):
+        self._controller_call("_stop_all")
 
     def _add(self):
         name, ok = QInputDialog.getText(self, "Add Group", "Group name:")
@@ -1112,9 +1159,12 @@ class GroupsSidebar(QWidget):
         gid = uuid.uuid4().hex[:8]
         self.config.groups.append(Group(id=gid, name=name))
         self.config.save()
+        self._current_group_id = gid
         self.refresh()
-        if hasattr(self.parent(), "targets_table"):
-            self.parent().targets_table.refresh(force=True)
+        controller = getattr(self, "_controller", None)
+        table = getattr(controller, "targets_table", None) if controller else None
+        if table:
+            table.refresh(force=True)
 
     def _rename(self):
         row = self.list.currentRow()
@@ -1127,8 +1177,10 @@ class GroupsSidebar(QWidget):
         grp.name = name
         self.config.save()
         self.refresh()
-        if hasattr(self.parent(), "targets_table"):
-            self.parent().targets_table.refresh(force=True)
+        controller = getattr(self, "_controller", None)
+        table = getattr(controller, "targets_table", None) if controller else None
+        if table:
+            table.refresh(force=True)
 
     def _delete(self):
         row = self.list.currentRow()
@@ -1139,9 +1191,28 @@ class GroupsSidebar(QWidget):
             if t.group_id == grp.id:
                 t.group_id = ""
         self.config.save()
+        if self._current_group_id == grp.id:
+            self._current_group_id = ""
         self.refresh()
-        if hasattr(self.parent(), "targets_table"):
-            self.parent().targets_table.refresh(force=True)
+        controller = getattr(self, "_controller", None)
+        table = getattr(controller, "targets_table", None) if controller else None
+        if table:
+            table.refresh(force=True)
+
+class GroupSettingsDialog(QDialog):
+    def __init__(self, main_window: 'MainWindow'):
+        super().__init__(main_window)
+        self.setWindowTitle("Group Settings")
+        self.setMinimumWidth(360)
+
+        layout = QVBoxLayout(self)
+        self.sidebar = GroupsSidebar(main_window.config, main_window, self)
+        self.sidebar.set_current_group(main_window.current_group, suppress_emit=True)
+        layout.addWidget(self.sidebar)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
 # --- Target rules dialog ----------------------------------------------------
 class RulesDialog(QDialog):
@@ -1892,6 +1963,10 @@ class MainWindow(QMainWindow):
         self.act_settings.triggered.connect(self._open_settings)
         tb.addAction(self.act_settings)
 
+        self.act_group_settings = QAction("Group Settings…", self)
+        self.act_group_settings.triggered.connect(self._open_group_settings)
+        tb.addAction(self.act_group_settings)
+
         # Central UI
         splitter = QSplitter()
         left = QWidget(); right = QWidget()
@@ -1931,11 +2006,9 @@ class MainWindow(QMainWindow):
         rv = QVBoxLayout(right)
         box_right = QGroupBox("Targets")
         rv.addWidget(box_right)
-        br = QHBoxLayout(box_right)
-        self.groups_sidebar = GroupsSidebar(self.config, self)
-        br.addWidget(self.groups_sidebar)
+        br = QVBoxLayout(box_right)
         self.targets_table = TargetsTable(self.config, self.gobbler)
-        br.addWidget(self.targets_table, 1)
+        br.addWidget(self.targets_table)
 
         self.dashboard = Dashboard(self.config, self.metrics)
         self.stack = QStackedWidget()
@@ -2337,6 +2410,10 @@ class MainWindow(QMainWindow):
         self.lbl_total.setText(f"Session reclaimed: {self.session_reclaimed_total:.1f} MB")
 
     # --- Settings / Hotkey / Wake ---
+    def _open_group_settings(self):
+        dlg = GroupSettingsDialog(self)
+        dlg.exec()
+
     def _open_settings(self):
         dlg = SettingsDialog(self.config, self)
         if dlg.exec() == QDialog.Accepted:
