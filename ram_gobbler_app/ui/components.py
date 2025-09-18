@@ -260,15 +260,9 @@ class GroupsSidebar(QWidget):
         layout.addWidget(self.toolbar)
         self.list = QListWidget()
         layout.addWidget(self.list)
-
-        def _make_action(text: str, handler: Callable[[], None]) -> QAction:
-            action = QAction(text, self)
-            action.triggered.connect(handler)
-            return action
-
-        self.toolbar.addAction(_make_action("Add", self._add))
-        self.toolbar.addAction(_make_action("Rename", self._rename))
-        self.toolbar.addAction(_make_action("Delete", self._delete))
+        self.toolbar.addAction("Add", self._add)
+        self.toolbar.addAction("Rename", self._rename)
+        self.toolbar.addAction("Delete", self._delete)
         self.list.currentRowChanged.connect(self._emit_group)
         self.refresh()
         self._suspend_emit = False
