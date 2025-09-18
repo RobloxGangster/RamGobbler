@@ -19,7 +19,7 @@ from .helpers import (
 )
 from .models import Config, Target
 from .processes import match_pids
-from scheduler import gate_reason, jittered_interval, schedule_allows_now, user_idle_seconds, window_active
+from scheduler import gate_reason, jittered_interval, user_idle_seconds, window_active
 from .system import is_system_process
 
 
@@ -172,8 +172,8 @@ class Gobbler(threading.Thread):
                         except IndexError:
                             pass
                     continue
-                if not schedule_allows_now(target.schedule, now_dt):
-                    reason = gate_reason(target.schedule, now_dt)
+                reason = gate_reason(self.config, target, now_dt)
+                if reason:
                     self.on_result(index, reason)
                     with self._lock:
                         try:
