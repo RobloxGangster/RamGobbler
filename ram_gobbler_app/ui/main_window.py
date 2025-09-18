@@ -16,7 +16,6 @@ from ..models import Config
 from ..platform import (
     QAction,
     QApplication,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -182,13 +181,10 @@ class MainWindow(QMainWindow):
         self.btn_gobble_now.clicked.connect(self._gobble_selected)
         self.btn_add_selected = QPushButton("Add Selected as Target")
         self.btn_add_selected.clicked.connect(self._add_selected)
-        self.cb_show_system = QCheckBox("Show system processes (⚠️)")
-        self.cb_show_system.setChecked(self.config.show_system)
-        self.cb_show_system.stateChanged.connect(self._toggle_show_system)
         search_row.addWidget(self.search)
         search_row.addWidget(self.btn_gobble_now)
         search_row.addWidget(self.btn_add_selected)
-        search_row.addWidget(self.cb_show_system)
+        search_row.addStretch(1)
         bl.addLayout(search_row)
 
         self.proc_model = ProcessTreeModel(include_system=self.config.show_system)
@@ -396,21 +392,19 @@ class MainWindow(QMainWindow):
 
         self._apply_startup_preference(on, persist=True)
 
-    def _toggle_show_system(self, _):
+    def _refresh_show_system_filter(self, include_system: bool):
         """Refresh the process table when the system filter changes."""
 
         pid = self._current_pid()
         bar = self.table.verticalScrollBar()
         scroll = bar.value() if bar else 0
-        self.config.show_system = bool(self.cb_show_system.isChecked())
-        self.config.save()
 
         def done():
             self._restore_expanded()
             self._select_pid(pid)
             self._restore_scrollbar(bar, scroll)
 
-        self.proc_model.set_include_system(self.config.show_system, done)
+        self.proc_model.set_include_system(include_system, done)
 
     def _on_group_selected(self, gid: str):
         """Filter the targets table to the newly selected group."""
@@ -846,8 +840,10 @@ class MainWindow(QMainWindow):
             prev_theme = self.config.theme
             prev_tray = self.config.tray_mode
             prev_startup = self.config.startup_enabled
+            prev_show_system = self.config.show_system
             self.config.load()
-            self.proc_model.set_include_system(self.config.show_system)
+            if self.config.show_system != prev_show_system:
+                self._refresh_show_system_filter(self.config.show_system)
             selected_group = self.current_group
             if selected_group and not any(
                 group.id == selected_group for group in self.config.groups
@@ -868,7 +864,6 @@ class MainWindow(QMainWindow):
                 startup_msg_shown = self._apply_startup_preference(
                     self.config.startup_enabled, persist=False, previous=prev_startup
                 )
-            self.cb_show_system.setChecked(self.config.show_system)
             self._apply_hotkey(self.config.hotkey)
             self._on_group_selected(selected_group)
             if not startup_msg_shown:
@@ -1489,12 +1484,14 @@ class MainWindow(QMainWindow):
         prev_theme = self.config.theme
         prev_tray_mode = self.config.tray_mode
         prev_startup = self.config.startup_enabled
+        prev_show_system = self.config.show_system
         dialog = SettingsDialog(self.config, self)
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
             theme_changed = self.config.theme != prev_theme
             tray_changed = self.config.tray_mode != prev_tray_mode
             startup_changed = self.config.startup_enabled != prev_startup
+            show_system_changed = self.config.show_system != prev_show_system
 
             if theme_changed:
                 self._apply_theme_choice(
@@ -1511,7 +1508,8 @@ class MainWindow(QMainWindow):
                     self.config.startup_enabled, persist=False, previous=prev_startup
                 )
 
-            self.proc_model.set_include_system(self.config.show_system)
+            if show_system_changed:
+                self._refresh_show_system_filter(self.config.show_system)
             self._apply_hotkey(self.config.hotkey)
             self.config.save()
             if not startup_msg_shown:
