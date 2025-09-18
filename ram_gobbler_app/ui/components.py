@@ -1175,7 +1175,7 @@ class TargetsTable(QTableWidget):
             self._refresh_timer.stop()
         self._pending_refresh_force = False
 
-        scroll_val, selected_uids = self._capture_state()
+        scroll_state, selected_uids = self._capture_state()
 
         self.setUpdatesEnabled(False)
         try:
@@ -1202,31 +1202,45 @@ class TargetsTable(QTableWidget):
         finally:
             self.setUpdatesEnabled(True)
 
-        self._restore_state(scroll_val, selected_uids)
+        self._restore_state(scroll_state, selected_uids)
 
-    def _capture_state(self) -> Tuple[int, List[str]]:
+    def _capture_state(self) -> Tuple[Tuple[int, int], List[str]]:
         """Remember scroll position and selected targets."""
 
-        bar = self.verticalScrollBar()
-        scroll_val = bar.value() if bar else 0
+        vbar = self.verticalScrollBar()
+        hbar = self.horizontalScrollBar()
+        scroll_vals = (
+            vbar.value() if vbar else 0,
+            hbar.value() if hbar else 0,
+        )
         selected = []
         if self.selectionModel():
             for index in self.selectionModel().selectedRows():
                 uid = self._row_targets[index.row()]
                 if uid:
                     selected.append(uid)
-        return scroll_val, selected
+        return scroll_vals, selected
 
-    def _restore_state(self, scroll_val: int, selected_uids: List[str]):
+    def _restore_state(
+        self, scroll_vals: Tuple[int, int], selected_uids: List[str]
+    ):
         """Restore the captured state after repopulating the table."""
 
-        bar = self.verticalScrollBar()
-        if bar:
-            bar.blockSignals(True)
+        v_scroll, h_scroll = scroll_vals
+        vbar = self.verticalScrollBar()
+        if vbar:
+            vbar.blockSignals(True)
             try:
-                bar.setValue(max(bar.minimum(), min(scroll_val, bar.maximum())))
+                vbar.setValue(max(vbar.minimum(), min(v_scroll, vbar.maximum())))
             finally:
-                bar.blockSignals(False)
+                vbar.blockSignals(False)
+        hbar = self.horizontalScrollBar()
+        if hbar:
+            hbar.blockSignals(True)
+            try:
+                hbar.setValue(max(hbar.minimum(), min(h_scroll, hbar.maximum())))
+            finally:
+                hbar.blockSignals(False)
         if not self.selectionModel():
             return
         for uid in selected_uids:
@@ -1237,8 +1251,12 @@ class TargetsTable(QTableWidget):
     def is_busy(self) -> bool:
         """Expose the interaction status to callers."""
 
-        bar = self.verticalScrollBar() if hasattr(self, "verticalScrollBar") else None
-        return bool(bar and bar.isSliderDown()) or self._interaction.active
+        vbar = self.verticalScrollBar() if hasattr(self, "verticalScrollBar") else None
+        hbar = self.horizontalScrollBar() if hasattr(self, "horizontalScrollBar") else None
+        sliding = bool(
+            (vbar and vbar.isSliderDown()) or (hbar and hbar.isSliderDown())
+        )
+        return sliding or self._interaction.active
 
     def _add_group_header(self, name: str, total: float, history: List[float]):
         """Insert a non-selectable summary row for a group."""
