@@ -1897,6 +1897,10 @@ class MainWindow(QMainWindow):
         left = QWidget(); right = QWidget()
         splitter.addWidget(left); splitter.addWidget(right)
         splitter.setSizes([650, 560])
+        splitter.setChildrenCollapsible(False)
+        for idx in range(splitter.count()):
+            splitter.setCollapsible(idx, False)
+        splitter.splitterMoved.connect(self._prevent_splitter_collapse)
         self.splitter = splitter
 
         # Left: Running processes
@@ -1968,6 +1972,21 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._apply_hotkey(self.config.hotkey))
 
         self._update_toolbar_scope()
+
+    def _prevent_splitter_collapse(self, _pos: int, _index: int) -> None:
+        if not hasattr(self, "splitter"):
+            return
+
+        min_size = 2
+        sizes = self.splitter.sizes()
+        if all(size >= min_size for size in sizes):
+            return
+
+        self.splitter.blockSignals(True)
+        try:
+            self.splitter.setSizes([max(size, min_size) for size in sizes])
+        finally:
+            self.splitter.blockSignals(False)
 
     # --- Theme & styles ---
     def _toggle_theme(self, on: bool):
