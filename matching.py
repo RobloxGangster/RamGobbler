@@ -43,7 +43,13 @@ def matches(info: Dict[str, Any], target: TargetSpec) -> bool:
 
     def match_path() -> bool:
         """Match using a normalized executable path."""
-        exe = os.path.normcase(info.get("exe", "")).casefold()
+        raw_exe = info.get("exe")
+        if raw_exe is None:
+            return False
+        try:
+            exe = os.path.normcase(os.fsdecode(raw_exe)).casefold()
+        except (TypeError, ValueError, AttributeError):
+            return False
         tgt = os.path.normcase(target.key).casefold()
         return exe == tgt
 
