@@ -44,7 +44,6 @@ class Target:
     last_gobble_ts: float = 0.0
     last_result: str = ""
     autostart: bool = False
-    include_children: bool = False
     last_delta_mb: float = 0.0
     session_reclaimed_mb: float = 0.0
     day_reclaimed_mb: float = 0.0
@@ -87,7 +86,6 @@ class Target:
             last_gobble_ts=float(raw.get("last_gobble_ts", raw.get(LEGACY_LAST_TS_KEY, 0.0))),
             last_result=raw.get("last_result", ""),
             autostart=bool(raw.get("autostart", False)),
-            include_children=bool(raw.get("include_children", False)),
             last_delta_mb=float(raw.get("last_delta_mb", 0.0)),
             session_reclaimed_mb=float(raw.get("session_reclaimed_mb", 0.0)),
             day_reclaimed_mb=float(raw.get("day_reclaimed_mb", 0.0)),

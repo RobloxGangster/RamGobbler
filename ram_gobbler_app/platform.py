@@ -21,10 +21,10 @@ QT_AVAILABLE = True
 def _install_qt_fallback() -> None:
     """Install lightweight stand-ins for Qt classes when bindings are missing."""
 
-    global QT_AVAILABLE, Qt, QAbstractItemModel, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
+    global QT_AVAILABLE, Qt, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
     global QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject, Signal
     global QIcon, QAction, QKeySequence, QPainter, QPen, QApplication, QMainWindow
-    global QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLineEdit, QTableView, QTreeView
+    global QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLineEdit, QTableView
     global QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox, QFileDialog
     global QMessageBox, QAbstractItemView, QSplitter, QStyle, QTableWidget
     global QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout
@@ -147,15 +147,8 @@ def _install_qt_fallback() -> None:
         SelectRows = 0
         NoEditTriggers = 0
 
-    Qt = types.SimpleNamespace(
-        DisplayRole=0,
-        ScrollBarAsNeeded=0,
-        ItemIsEnabled=1,
-        ItemIsSelectable=2,
-        NoItemFlags=0,
-    )
+    Qt = types.SimpleNamespace(DisplayRole=0, ScrollBarAsNeeded=0)
     QObject = type("QObject", (_DummyObject,), {})
-    QAbstractItemModel = type("QAbstractItemModel", (_DummyObject,), {})
     QAbstractTableModel = type("QAbstractTableModel", (_DummyObject,), {})
     QModelIndex = type("QModelIndex", (_DummyObject,), {})
     QSortFilterProxyModel = type("QSortFilterProxyModel", (_DummyObject,), {})
@@ -178,7 +171,6 @@ def _install_qt_fallback() -> None:
     QGroupBox = type("QGroupBox", (_DummyObject,), {})
     QLineEdit = type("QLineEdit", (_DummyObject,), {})
     QTableView = type("QTableView", (_DummyObject,), {})
-    QTreeView = type("QTreeView", (_DummyObject,), {})
     QPushButton = type("QPushButton", (_DummyObject,), {})
     QLabel = type("QLabel", (_DummyObject,), {})
     QHeaderView = _DummyHeaderView
@@ -210,7 +202,6 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
     try:
         from PySide6.QtCore import (
             Qt,
-            QAbstractItemModel,
             QAbstractTableModel,
             QModelIndex,
             QSortFilterProxyModel,
@@ -232,7 +223,6 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QGroupBox,
             QLineEdit,
             QTableView,
-            QTreeView,
             QPushButton,
             QLabel,
             QHeaderView,
@@ -360,7 +350,6 @@ class MSG(ctypes.Structure):  # type: ignore[misc]
 
 __all__ = [
     "Qt",
-    "QAbstractItemModel",
     "QAbstractTableModel",
     "QModelIndex",
     "QSortFilterProxyModel",
@@ -384,7 +373,6 @@ __all__ = [
     "QGroupBox",
     "QLineEdit",
     "QTableView",
-    "QTreeView",
     "QPushButton",
     "QLabel",
     "QHeaderView",
