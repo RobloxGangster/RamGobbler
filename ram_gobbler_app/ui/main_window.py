@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from typing import List, Optional, Set, Tuple
+from typing import Iterable, List, Optional, Set, Tuple
 
 from ..constants import APP_NAME, CONFIG_PATH, METRICS_PATH
 from ..deps import psutil
@@ -744,6 +744,46 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, APP_NAME, f"Import failed: {exc}")
 
+    @staticmethod
+    def _collect_candidate_targets(
+        subtree_nodes: Iterable[ProcessNode],
+        existing: Set[Tuple[str, str]],
+        selected_pid: int,
+        protect_system: bool,
+    ) -> List[Tuple[ProcessNode, str, str]]:
+        """Return unique candidate targets drawn from ``subtree_nodes``.
+
+        The selected node (``selected_pid``) is always included exactly once
+        even when its canonical key already exists in ``existing`` so that the
+        caller may offer the user a chance to adjust the match strategy.
+        """
+
+        seen: Set[Tuple[str, str]] = set(existing)
+        additions: List[Tuple[ProcessNode, str, str]] = []
+        selected_duplicate_allowed = True
+
+        for candidate in subtree_nodes:
+            if protect_system:
+                try:
+                    if is_system_process(psutil.Process(candidate.pid)):
+                        continue
+                except Exception:
+                    pass
+            key = candidate.exe or candidate.name or ""
+            if not key:
+                continue
+            match_by = "path" if candidate.exe else "name"
+            canonical = (key.casefold(), match_by)
+            if canonical in seen:
+                if candidate.pid == selected_pid and selected_duplicate_allowed:
+                    selected_duplicate_allowed = False
+                else:
+                    continue
+            additions.append((candidate, key, match_by))
+            seen.add(canonical)
+
+        return additions
+
     def _add_selected(self):
         """Create a new target based on the selected process row."""
 
@@ -770,24 +810,13 @@ class MainWindow(QMainWindow):
         subtree_nodes = list(item.iter_nodes())
         if not subtree_nodes:
             return
-        seen = {(t.key.casefold(), t.match_by) for t in self.config.targets}
-        additions: List[Tuple[ProcessNode, str, str]] = []
-        for candidate in subtree_nodes:
-            if self.config.protect_system:
-                try:
-                    if is_system_process(psutil.Process(candidate.pid)):
-                        continue
-                except Exception:
-                    pass
-            key = candidate.exe or candidate.name or ""
-            if not key:
-                continue
-            match_by = "path" if candidate.exe else "name"
-            canonical = (key.casefold(), match_by)
-            if canonical in seen:
-                continue
-            additions.append((candidate, key, match_by))
-            seen.add(canonical)
+        existing_keys = {(t.key.casefold(), t.match_by) for t in self.config.targets}
+        additions = self._collect_candidate_targets(
+            subtree_nodes,
+            existing_keys,
+            node.pid,
+            self.config.protect_system,
+        )
         if not additions:
             QMessageBox.information(
                 self,
