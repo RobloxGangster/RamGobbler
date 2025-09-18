@@ -48,6 +48,7 @@ class Gobbler(threading.Thread):
         self.helper_warned = False
         self._last_flush = time.time()
         self._reset_times: Dict[str, Deque[float]] = {}
+        self._manual_requests: Deque[int] = deque()
 
     def stop(self) -> None:
         """Signal the thread to terminate and persist metrics."""
@@ -121,6 +122,13 @@ class Gobbler(threading.Thread):
         """Main worker loop executed by :class:`threading.Thread`."""
 
         while not self._stop.is_set():
+            manual_requests: List[int] = []
+            with self._lock:
+                while self._manual_requests:
+                    manual_requests.append(self._manual_requests.popleft())
+            for manual_index in manual_requests:
+                self._process_manual_request(manual_index)
+
             now_ts = time.time()
             now_dt = datetime.now()
             with self._lock:
@@ -199,85 +207,7 @@ class Gobbler(threading.Thread):
                 if self.config.idle_seconds > 0 and user_idle_seconds() < self.config.idle_seconds:
                     self.on_result(index, "idle")
                     continue
-
-                pids = match_pids(target)
-                total_delta = 0.0
-                total_rss = 0.0
-                gobbled = 0
-                helper_needed = False
-
-                for pid in pids:
-                    try:
-                        if self.config.protect_system and is_system_process(psutil.Process(pid)):
-                            continue
-                    except Exception:
-                        continue
-                    before = rss_mb(pid)
-                    ok = empty_working_set(pid) if target.strategy != "reset" else reset_working_set(pid)
-                    after = rss_mb(pid)
-                    delta = 0.0
-                    if ok:
-                        gobbled += 1
-                        if before is not None and after is not None:
-                            delta = max(0.0, before - after)
-                    else:
-                        ok_helper, helper_delta = helper_gobble(pid, target.strategy)
-                        if ok_helper:
-                            gobbled += 1
-                            after = rss_mb(pid)
-                            delta = helper_delta
-                        else:
-                            helper_needed = True
-                            if before is not None and after is not None:
-                                delta = max(0.0, before - after)
-                    total_delta += delta
-                    if after is not None:
-                        total_rss += after
-
-                event_ts = time.time()
-                real_target: Optional[Target] = None
-                with self._lock:
-                    try:
-                        real_target = self.config.targets[index]
-                        real_target.last_gobble_ts = event_ts
-                        real_target.last_delta_mb = total_delta
-                        real_target.last_result = f"Gobbled {gobbled} procs, -{total_delta:.1f} MB"
-                        real_target.last_gobble_reason = gobble_reason
-                        real_target.last_skip_reason = ""
-                        self._update_day_rollover(real_target)
-                        real_target.session_reclaimed_mb += total_delta
-                        real_target.day_reclaimed_mb += total_delta
-                        if total_delta > 0:
-                            real_target.history.append(total_delta)
-                            real_target.history = real_target.history[-40:]
-                        if self.config.diag_level > 0:
-                            real_target._events.append(
-                                {
-                                    "ts": event_ts,
-                                    "delta_mb": total_delta,
-                                    "reason": gobble_reason,
-                                    "ok": gobbled > 0,
-                                }
-                            )
-                        if real_target.adaptive:
-                            growth = max(0.0, total_rss - real_target.last_total_rss_mb)
-                            if total_delta >= 50.0 or growth >= 100.0:
-                                real_target.interval_sec = max(5, real_target.interval_sec - 2)
-                            elif total_delta < 5.0:
-                                real_target.interval_sec = min(60, real_target.interval_sec + 2)
-                            real_target.last_total_rss_mb = total_rss
-                    except IndexError:
-                        real_target = None
-                if real_target is not None:
-                    self._post_gobble(real_target, total_delta, event_ts)
-                msg = f"Gobbled {gobbled} procs, -{total_delta:.1f} MB"
-                if helper_needed and not self.helper_warned:
-                    msg += " (helper not running)"
-                    self.helper_warned = True
-                self.metrics.add_event(event_ts, total_delta, gobble_reason, target.strategy)
-                self.on_result(index, msg)
-                if total_delta > 0:
-                    self.on_delta(total_delta)
+                self._perform_gobble(index, target, gobble_reason)
             if time.time() - self._last_flush > 10:
                 try:
                     self.metrics.save()
@@ -292,7 +222,21 @@ class Gobbler(threading.Thread):
         with self._lock:
             if 0 <= index < len(self.config.targets):
                 self.config.targets[index].active = active
+                if not active:
+                    if self._manual_requests:
+                        self._manual_requests = deque(i for i in self._manual_requests if i != index)
+                    self.config.targets[index].last_result = "Stopped"
                 self.config.save()
+
+    def trigger_now(self, index: int, *, ensure_active: bool = True) -> None:
+        """Queue an immediate gobble for the specified target."""
+
+        with self._lock:
+            if 0 <= index < len(self.config.targets):
+                if ensure_active and not self.config.targets[index].active:
+                    self.config.targets[index].active = True
+                    self.config.save()
+                self._manual_requests.append(index)
 
     def set_interval(self, index: int, seconds: int) -> None:
         """Change the per-target polling interval."""
@@ -333,6 +277,115 @@ class Gobbler(threading.Thread):
             if 0 <= index < len(self.config.targets):
                 self.config.targets.pop(index)
                 self.config.save()
+
+    def _process_manual_request(self, index: int) -> None:
+        """Handle manually queued gobbles triggered from the UI."""
+
+        with self._lock:
+            if not (0 <= index < len(self.config.targets)):
+                return
+            target = self.config.targets[index]
+        self._perform_gobble(index, target, "manual")
+
+    def _is_active(self, index: int) -> bool:
+        """Check whether a target remains active."""
+
+        with self._lock:
+            if 0 <= index < len(self.config.targets):
+                return self.config.targets[index].active
+            return False
+
+    def _perform_gobble(self, index: int, target: Target, reason: str) -> None:
+        """Execute the gobble operation for ``target`` and update state."""
+
+        pids = match_pids(target)
+        total_delta = 0.0
+        total_rss = 0.0
+        gobbled = 0
+        helper_needed = False
+        aborted = False
+
+        for pid in pids:
+            if not self._is_active(index):
+                aborted = True
+                break
+            try:
+                if self.config.protect_system and is_system_process(psutil.Process(pid)):
+                    continue
+            except Exception:
+                continue
+            before = rss_mb(pid)
+            ok = empty_working_set(pid) if target.strategy != "reset" else reset_working_set(pid)
+            after = rss_mb(pid)
+            delta = 0.0
+            if ok:
+                gobbled += 1
+                if before is not None and after is not None:
+                    delta = max(0.0, before - after)
+            else:
+                ok_helper, helper_delta = helper_gobble(pid, target.strategy)
+                if ok_helper:
+                    gobbled += 1
+                    after = rss_mb(pid)
+                    delta = helper_delta
+                else:
+                    helper_needed = True
+                    if before is not None and after is not None:
+                        delta = max(0.0, before - after)
+            total_delta += delta
+            if after is not None:
+                total_rss += after
+
+        event_ts = time.time()
+        real_target: Optional[Target] = None
+        result_msg = "Stopped" if aborted else f"Gobbled {gobbled} procs, -{total_delta:.1f} MB"
+        if aborted and gobbled > 0:
+            result_msg = f"Stopped after {gobbled} procs, -{total_delta:.1f} MB"
+        with self._lock:
+            try:
+                real_target = self.config.targets[index]
+                if getattr(real_target, "uid", None) != getattr(target, "uid", None):
+                    real_target = None
+                    raise IndexError
+                real_target.last_gobble_ts = event_ts
+                real_target.last_delta_mb = total_delta
+                real_target.last_result = result_msg
+                real_target.last_gobble_reason = reason
+                real_target.last_skip_reason = ""
+                self._update_day_rollover(real_target)
+                real_target.session_reclaimed_mb += total_delta
+                real_target.day_reclaimed_mb += total_delta
+                if total_delta > 0:
+                    real_target.history.append(total_delta)
+                    real_target.history = real_target.history[-40:]
+                if self.config.diag_level > 0:
+                    real_target._events.append(
+                        {
+                            "ts": event_ts,
+                            "delta_mb": total_delta,
+                            "reason": reason,
+                            "ok": gobbled > 0,
+                        }
+                    )
+                if real_target.adaptive:
+                    growth = max(0.0, total_rss - real_target.last_total_rss_mb)
+                    if total_delta >= 50.0 or growth >= 100.0:
+                        real_target.interval_sec = max(5, real_target.interval_sec - 2)
+                    elif total_delta < 5.0:
+                        real_target.interval_sec = min(60, real_target.interval_sec + 2)
+                    real_target.last_total_rss_mb = total_rss
+            except IndexError:
+                real_target = None
+        if real_target is not None:
+            self._post_gobble(real_target, total_delta, event_ts)
+        message = result_msg
+        if helper_needed and not self.helper_warned:
+            message += " (helper not running)"
+            self.helper_warned = True
+        self.metrics.add_event(event_ts, total_delta, reason, target.strategy)
+        self.on_result(index, message)
+        if total_delta > 0:
+            self.on_delta(total_delta)
 
 
 __all__ = ["Gobbler"]
