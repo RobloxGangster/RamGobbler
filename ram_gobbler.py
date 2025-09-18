@@ -1897,6 +1897,10 @@ class MainWindow(QMainWindow):
         left = QWidget(); right = QWidget()
         splitter.addWidget(left); splitter.addWidget(right)
         splitter.setSizes([650, 560])
+        splitter.setChildrenCollapsible(False)
+        for idx in range(splitter.count()):
+            splitter.setCollapsible(idx, False)
+        splitter.splitterMoved.connect(self._prevent_splitter_collapse)
         self.splitter = splitter
 
         # Left: Running processes
@@ -1968,6 +1972,56 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._apply_hotkey(self.config.hotkey))
 
         self._update_toolbar_scope()
+
+    def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
+        splitter = getattr(self, "splitter", None)
+        if splitter is None:
+            return
+
+        sizes = splitter.sizes()
+        if not sizes:
+            return
+
+        total = sum(sizes)
+        handle_width = splitter.handleWidth()
+        if splitter.orientation() == Qt.Horizontal:
+            available = splitter.width()
+        else:
+            available = splitter.height()
+        max_pos = max(0, available - handle_width)
+        edge_slop = min(max(1, handle_width // 2), max_pos)
+
+        if len(sizes) == 2 and total > 0:
+            if pos <= edge_slop:
+                self._set_splitter_sizes([0, total])
+                return
+            if pos >= max_pos - edge_slop:
+                self._set_splitter_sizes([total, 0])
+                return
+
+        min_size = 1
+        if all(size >= min_size for size in sizes):
+            return
+
+        self._set_splitter_sizes([max(size, min_size) for size in sizes])
+
+    def _set_splitter_sizes(self, sizes: List[int]) -> None:
+        splitter = getattr(self, "splitter", None)
+        if splitter is None:
+            return
+
+        splitter.blockSignals(True)
+        try:
+            # Temporarily allow collapsing so we can drive a pane to zero when the user
+            # explicitly drags the handle to an edge.
+            collapsible_states = [splitter.isCollapsible(idx) for idx in range(splitter.count())]
+            for idx in range(splitter.count()):
+                splitter.setCollapsible(idx, True)
+            splitter.setSizes(sizes)
+        finally:
+            for idx, was_collapsible in enumerate(collapsible_states):
+                splitter.setCollapsible(idx, was_collapsible)
+            splitter.blockSignals(False)
 
     # --- Theme & styles ---
     def _toggle_theme(self, on: bool):
