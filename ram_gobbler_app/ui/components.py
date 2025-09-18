@@ -8,6 +8,7 @@ tables and dialogs interact with the background gobbler thread.
 
 from __future__ import annotations
 
+import ntpath
 import threading
 import time
 import uuid
@@ -1136,6 +1137,33 @@ class TargetsTable(QTableWidget):
                 return grp.name
         return gid
 
+    def _display_target_label(self, target: Target) -> str:
+        """Return a compact label for the target's process column."""
+
+        raw_key = getattr(target, "key", "") or ""
+        key = raw_key.strip()
+        if not key:
+            return ""
+
+        candidate = key.strip("\"'")
+        looks_like_path = target.match_by in {"path", "parent"} or any(
+            sep in candidate for sep in ("/", "\\")
+        )
+
+        if looks_like_path:
+            lower = candidate.lower()
+            exe_idx = lower.rfind(".exe")
+            if exe_idx >= 0:
+                candidate = candidate[: exe_idx + 4]
+            candidate = candidate.strip("\"'")
+            base = ntpath.basename(candidate)
+            if base:
+                return base
+            if candidate:
+                return candidate
+
+        return candidate or raw_key
+
     def refresh(self, force: bool = False):
         """Rebuild the table rows, preserving scroll position and selection."""
 
@@ -1243,7 +1271,10 @@ class TargetsTable(QTableWidget):
         self._row_config_indexes.append(idx)
 
         group_widget = self._create_group_widget(idx, target)
-        target_item = QTableWidgetItem(target.key)
+        target_label = self._display_target_label(target)
+        target_item = QTableWidgetItem(target_label)
+        if target.key:
+            target_item.setToolTip(target.key)
         match_item = QTableWidgetItem(target.match_by)
         status_text = "Gobbling" if target.active else "Idle"
         if target.last_result:
