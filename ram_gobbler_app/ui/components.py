@@ -984,7 +984,16 @@ class IntervalEditor(QWidget):
                 btn.setFixedHeight(28)
             if hasattr(btn, "setStyleSheet"):
                 btn.setStyleSheet(
-                    f"color: {color}; font-size: 16px; font-weight: bold;"
+                    f"""
+                    QPushButton {{
+                        background-color: #AEBFF5;
+                        border: 1px solid #8C9FD9;
+                        border-radius: 4px;
+                        font-size: 16px;
+                        font-weight: bold;
+                        color: {color};
+                    }}
+                    """
                 )
             btn_layout.addWidget(btn)
 
