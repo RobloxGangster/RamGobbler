@@ -1242,12 +1242,10 @@ class TargetsTable(QTableWidget):
             finally:
                 vbar.blockSignals(False)
         hbar = self.horizontalScrollBar()
-        h_scroll_target = None
         if hbar:
             hbar.blockSignals(True)
             try:
-                h_scroll_target = max(hbar.minimum(), min(h_scroll, hbar.maximum()))
-                hbar.setValue(h_scroll_target)
+                hbar.setValue(max(hbar.minimum(), min(h_scroll, hbar.maximum())))
             finally:
                 hbar.blockSignals(False)
         if not self.selectionModel():
@@ -1256,8 +1254,6 @@ class TargetsTable(QTableWidget):
             row = self.uid_to_row.get(uid)
             if row is not None:
                 self.selectRow(row)
-        if hbar and h_scroll_target is not None:
-            hbar.setValue(h_scroll_target)
 
     def is_busy(self) -> bool:
         """Expose the interaction status to callers."""
