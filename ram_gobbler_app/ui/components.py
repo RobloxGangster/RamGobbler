@@ -2542,7 +2542,6 @@ class SettingsDialog(QDialog):
         self.cmb_theme = QComboBox()
         self.cmb_theme.addItem("Dark", "dark")
         self.cmb_theme.addItem("Light", "light")
-        self.cmb_theme.addItem("Red", "red")
         idx = self.cmb_theme.findData(config.theme)
         if idx >= 0:
             self.cmb_theme.setCurrentIndex(idx)
@@ -2605,7 +2604,7 @@ class SettingsDialog(QDialog):
         self.cfg.protect_system = bool(self.cb_protect_system.isChecked())
         self.cfg.pressure_enabled = bool(self.cb_pressure.isChecked())
         theme = self.cmb_theme.currentData()
-        self.cfg.theme = theme if theme in {"light", "dark", "red"} else "dark"
+        self.cfg.theme = theme if theme in {"light", "dark"} else "dark"
         self.cfg.tray_mode = bool(self.cb_tray_mode.isChecked())
         self.cfg.startup_enabled = bool(self.cb_startup.isChecked())
         self.cfg.min_free_percent = int(self.sb_min_free.value())
