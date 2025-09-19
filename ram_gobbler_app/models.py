@@ -117,12 +117,6 @@ class Config:
         self.targets: List[Target] = []
         self.groups: List[Group] = []
         self.theme: str = "dark"
-        self.primary_color: str = "#5A7BFF"
-        self.secondary_color: str = "#283142"
-        self.text_color: str = "#E8ECF7"
-        self.button_color: str = "#5A7BFF"
-        self.font_family: str = "Segoe UI"
-        self.font_size: int = 11
         self.tray_mode: bool = True
         self.startup_enabled: bool = False
         self.hotkey: str = ""
@@ -140,93 +134,7 @@ class Config:
         self.metered: bool = False
         self.daily_recap: dict = {"enabled": False, "time": "00:00"}
         self.diag_level: int = 0
-        self.version: int = 6
-
-    @staticmethod
-    def _normalise_hex(value: str, fallback: str) -> str:
-        try:
-            raw = value.strip()
-        except Exception:
-            return fallback
-        if not raw:
-            return fallback
-        if not raw.startswith("#"):
-            raw = f"#{raw}"
-        if len(raw) != 7:
-            return fallback
-        try:
-            int(raw[1:], 16)
-        except Exception:
-            return fallback
-        return raw.upper()
-
-    @classmethod
-    def _palette_defaults(cls, mode: str) -> dict:
-        base = (mode or "dark").lower()
-        if base == "light":
-            return {
-                "primary": "#2D6AE3",
-                "secondary": "#CDD5E6",
-                "text": "#0B1220",
-                "button": "#2D6AE3",
-            }
-        return {
-            "primary": "#5A7BFF",
-            "secondary": "#283142",
-            "text": "#E8ECF7",
-            "button": "#5A7BFF",
-        }
-
-    def palette_dict(self) -> dict:
-        return {
-            "primary": self.primary_color,
-            "secondary": self.secondary_color,
-            "text": self.text_color,
-            "button": self.button_color,
-        }
-
-    def default_palette(self) -> dict:
-        return dict(self._palette_defaults(self.theme))
-
-    def apply_palette(self, palette: dict) -> None:
-        defaults = self._palette_defaults(self.theme)
-        self.primary_color = self._normalise_hex(
-            palette.get("primary", palette.get("primary_color", defaults["primary"])),
-            defaults["primary"],
-        )
-        self.secondary_color = self._normalise_hex(
-            palette.get("secondary", palette.get("secondary_color", defaults["secondary"])),
-            defaults["secondary"],
-        )
-        self.text_color = self._normalise_hex(
-            palette.get("text", palette.get("text_color", defaults["text"])),
-            defaults["text"],
-        )
-        self.button_color = self._normalise_hex(
-            palette.get("button", palette.get("button_color", defaults["button"])),
-            defaults["button"],
-        )
-
-    def typography(self) -> dict:
-        return {"family": self.font_family, "size": self.font_size}
-
-    @staticmethod
-    def default_typography() -> dict:
-        return {"family": "Segoe UI", "size": 11}
-
-    def apply_typography(self, typography: dict) -> None:
-        family = typography.get("family", self.font_family)
-        size = typography.get("size", self.font_size)
-        try:
-            family = str(family)
-        except Exception:
-            family = self.font_family
-        try:
-            size_val = int(size)
-        except Exception:
-            size_val = self.font_size
-        self.font_family = family or "Segoe UI"
-        self.font_size = max(8, min(24, size_val))
+        self.version: int = 5
 
     def load(self) -> None:
         """Load configuration from disk, creating defaults when necessary."""
@@ -264,26 +172,7 @@ class Config:
             self.metered = bool(raw.get("metered", False))
             self.daily_recap = raw.get("daily_recap", self.daily_recap)
             self.diag_level = int(raw.get("diag_level", 0))
-            palette_raw = raw.get("palette")
-            if not isinstance(palette_raw, dict):
-                palette_raw = {
-                    "primary": raw.get("primary_color"),
-                    "secondary": raw.get("secondary_color"),
-                    "text": raw.get("text_color"),
-                    "button": raw.get("button_color"),
-                }
-            defaults = self._palette_defaults(self.theme)
-            if not any(palette_raw.values()):
-                palette_raw = defaults
-            self.apply_palette({**defaults, **palette_raw})
-            typography_raw = raw.get("typography")
-            if not isinstance(typography_raw, dict):
-                typography_raw = {}
-            if "font_family" in raw or "font_size" in raw:
-                typography_raw.setdefault("family", raw.get("font_family"))
-                typography_raw.setdefault("size", raw.get("font_size"))
-            self.apply_typography(typography_raw)
-            self.version = max(int(raw.get("version", 1)), 6)
+            self.version = max(int(raw.get("version", 1)), 5)
         except Exception:
             # A corrupted configuration should not prevent the UI from loading;
             # we simply start with an empty list of targets.
@@ -322,16 +211,6 @@ class Config:
             "metered": self.metered,
             "daily_recap": self.daily_recap,
             "diag_level": self.diag_level,
-            "palette": {
-                "primary": self.primary_color,
-                "secondary": self.secondary_color,
-                "text": self.text_color,
-                "button": self.button_color,
-            },
-            "typography": {
-                "family": self.font_family,
-                "size": self.font_size,
-            },
             "version": self.version,
         }
         with open(self.path, "w", encoding="utf-8") as handle:
