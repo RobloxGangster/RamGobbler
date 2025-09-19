@@ -93,14 +93,14 @@ class MainWindow(QMainWindow):
         layout = tb.layout() if hasattr(tb, "layout") else None
         if layout is not None:
             try:
-                layout.setSpacing(4)
+                layout.setSpacing(2)
                 layout.setContentsMargins(6, 4, 6, 4)
             except Exception:
                 pass
         if hasattr(tb, "setStyleSheet"):
             tb.setStyleSheet(
-                "QToolBar {spacing: 4px;} "
-                "QToolButton {padding: 4px 8px; margin-right: 4px;}"
+                "QToolBar {spacing: 2px;} "
+                "QToolButton {padding: 4px 8px; margin-right: 2px;}"
             )
 
         act_refresh = QAction(self.style().standardIcon(QStyle.SP_BrowserReload), "Refresh Processes", self)
