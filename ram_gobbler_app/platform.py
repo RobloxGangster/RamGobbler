@@ -23,7 +23,7 @@ def _install_qt_fallback() -> None:
 
     global QT_AVAILABLE, Qt, QAbstractItemModel, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
     global QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject, Signal
-    global QIcon, QAction, QKeySequence, QPainter, QPen, QColor, QApplication, QMainWindow
+    global QIcon, QAction, QKeySequence, QPainter, QPen, QApplication, QMainWindow
     global QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLineEdit, QTableView, QTreeView
     global QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox, QFileDialog
     global QMessageBox, QAbstractItemView, QSplitter, QStyle, QTableWidget
@@ -170,7 +170,6 @@ def _install_qt_fallback() -> None:
     QKeySequence = type("QKeySequence", (_DummyObject,), {})
     QPainter = type("QPainter", (_DummyObject,), {})
     QPen = type("QPen", (_DummyObject,), {})
-    QColor = type("QColor", (_DummyObject,), {})
     QApplication = _DummyApplication
     QMainWindow = type("QMainWindow", (_DummyObject,), {})
     QWidget = type("QWidget", (_DummyObject,), {})
@@ -223,7 +222,7 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QObject,
             Signal,
         )
-        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen, QColor
+        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
         from PySide6.QtWidgets import (
             QApplication,
             QMainWindow,
@@ -377,7 +376,6 @@ __all__ = [
     "QKeySequence",
     "QPainter",
     "QPen",
-    "QColor",
     "QApplication",
     "QMainWindow",
     "QWidget",
