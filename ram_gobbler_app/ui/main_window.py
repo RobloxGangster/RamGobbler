@@ -16,6 +16,7 @@ from ..models import Config
 from ..platform import (
     QAction,
     QApplication,
+    QFont,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -35,6 +36,7 @@ from ..platform import (
     QVBoxLayout,
     QWidget,
     QSize,
+    QSizePolicy,
     Qt,
     QAbstractItemView,
     QHeaderView,
@@ -55,10 +57,12 @@ from .components import (
     ProcessFilterProxyModel,
     ProcessTreeModel,
     SettingsDialog,
+    ThemeCustomizer,
     TargetsTable,
     _InteractionWatcher,
     IntervalEditor,
 )
+from .theme import ThemePalette, build_stylesheet
 from metrics import Metrics
 
 
@@ -151,6 +155,15 @@ class MainWindow(QMainWindow):
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+
+        self.theme_customizer = ThemeCustomizer(self.config, compact=True, parent=self)
+        self.theme_customizer.applyRequested.connect(self._on_theme_customizer_apply)
+        self.theme_customizer.resetRequested.connect(self._on_theme_customizer_apply)
+        tb.addWidget(self.theme_customizer)
+
         splitter = QSplitter()
         left = QWidget()
         right = QWidget()
@@ -164,16 +177,16 @@ class MainWindow(QMainWindow):
         self.splitter = splitter
 
         lv = QVBoxLayout(left)
-        lv.setContentsMargins(0, 0, 0, 0)
-        lv.setSpacing(0)
+        lv.setContentsMargins(18, 18, 12, 18)
+        lv.setSpacing(12)
         box_left = QGroupBox("Running Processes")
         lv.addWidget(box_left, 1)
         bl = QVBoxLayout(box_left)
-        bl.setContentsMargins(12, 12, 12, 12)
-        bl.setSpacing(8)
+        bl.setContentsMargins(18, 18, 18, 18)
+        bl.setSpacing(12)
         search_row = QHBoxLayout()
         search_row.setContentsMargins(0, 0, 0, 0)
-        search_row.setSpacing(8)
+        search_row.setSpacing(12)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search by name or path…")
         self.btn_gobble_now = QPushButton("Gobble Now")
@@ -181,6 +194,11 @@ class MainWindow(QMainWindow):
         self.btn_gobble_now.clicked.connect(self._gobble_selected)
         self.btn_add_selected = QPushButton("Add Selected as Target")
         self.btn_add_selected.clicked.connect(self._add_selected)
+        for widget in (self.search, self.btn_gobble_now, self.btn_add_selected):
+            try:
+                widget.setMinimumHeight(36)
+            except Exception:
+                continue
         search_row.addWidget(self.search)
         search_row.addWidget(self.btn_gobble_now)
         search_row.addWidget(self.btn_add_selected)
@@ -236,13 +254,13 @@ class MainWindow(QMainWindow):
                 pass
 
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(0)
+        rv.setContentsMargins(12, 18, 18, 18)
+        rv.setSpacing(12)
         box_right = QGroupBox("Targets")
         rv.addWidget(box_right, 1)
         br = QVBoxLayout(box_right)
-        br.setContentsMargins(12, 12, 12, 12)
-        br.setSpacing(8)
+        br.setContentsMargins(18, 18, 18, 18)
+        br.setSpacing(12)
         self.targets_table = TargetsTable(self.config, self.gobbler)
         br.addWidget(self.targets_table)
 
@@ -265,7 +283,7 @@ class MainWindow(QMainWindow):
 
         self._init_tray()
 
-        self._apply_styles(self.config.theme)
+        self._apply_styles()
 
         QTimer.singleShot(0, self._autostart_targets)
 
@@ -328,24 +346,57 @@ class MainWindow(QMainWindow):
                 splitter.setCollapsible(idx, was_collapsible)
             splitter.blockSignals(False)
 
-    def _apply_theme_choice(
-        self, theme: str, *, persist: bool = True, previous: Optional[str] = None
-    ) -> None:
-        """Apply the requested theme and optionally persist it."""
+    def _on_theme_customizer_apply(self, palette: dict, typography: dict) -> None:
+        """Persist toolbar theme changes and refresh the interface."""
 
-        selected = "light" if theme == "light" else "dark"
-        prior = previous if previous is not None else self.config.theme
-        changed = prior != selected
-        self.config.theme = selected
-        if changed:
-            self._apply_styles(selected)
+        self._apply_theme_update(palette, typography, persist=True)
+
+    def _apply_theme_update(
+        self, palette: dict, typography: dict, *, persist: bool
+    ) -> None:
+        """Apply palette and typography updates across the application."""
+
+        previous_palette = self.config.palette_dict()
+        previous_typography = self.config.typography()
+        self.config.apply_palette(palette)
+        self.config.apply_typography(typography)
+        changed = (
+            previous_palette != self.config.palette_dict()
+            or previous_typography != self.config.typography()
+        )
+        theme_palette = ThemePalette.from_dict(self.config.palette_dict())
+        self.config.theme = "dark" if theme_palette.dark_mode else "light"
+        if not changed and not persist:
+            return
+        self._apply_styles()
+        if hasattr(self.targets_table, "viewport"):
+            try:
+                self.targets_table.viewport().update()
+            except Exception:
+                pass
+        if hasattr(self.targets_table, "update"):
+            try:
+                self.targets_table.update()
+            except Exception:
+                pass
+        if hasattr(self.dashboard, "refresh"):
+            try:
+                self.dashboard.refresh(self.session_reclaimed_total)
+            except Exception:
+                pass
         if persist:
             self.config.save()
-
-    def _toggle_theme(self, on: bool):
-        """Switch between dark and light stylesheets."""
-
-        self._apply_theme_choice("light" if on else "dark", persist=True)
+        if hasattr(self.theme_customizer, "sync_defaults"):
+            try:
+                self.theme_customizer.sync_defaults(self.config)
+            except Exception:
+                pass
+        if hasattr(self.theme_customizer, "set_palette"):
+            try:
+                self.theme_customizer.set_palette(self.config.palette_dict())
+                self.theme_customizer.set_typography(self.config.typography())
+            except Exception:
+                pass
 
     def _apply_tray_mode(
         self, enabled: bool, *, persist: bool = True, previous: Optional[bool] = None
@@ -535,41 +586,18 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentWidget(self.dashboard)
             self.act_view.setText("Targets")
 
-    def _apply_styles(self, theme: str):
-        """Apply a stylesheet matching the chosen theme."""
+    def _apply_styles(self) -> None:
+        """Apply the palette-driven stylesheet across the window."""
 
-        if theme == "light":
-            self.setStyleSheet(
-                """
-                QMainWindow { background: #f5f7fb; }
-                QGroupBox { color: #0b1220; border: 1px solid #d8dce6; border-radius: 12px; margin-top: 10px; }
-                QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTreeView, QTableView, QTableWidget, QHeaderView::section { color: #0b1220; background: #ffffff; }
-                QLineEdit { border: 1px solid #cbd2e1; border-radius: 8px; padding: 8px; }
-                QTreeView, QTableView, QTableWidget { gridline-color: #e5e9f2; selection-background-color: #d9e6ff; selection-color: #0b1220; }
-                QToolBar { background: #f5f7fb; border-bottom: 1px solid #e5e9f2; }
-                QPushButton { background: #ecf1fb; color: #0b1220; border: 1px solid #d8dce6; border-radius: 10px; padding: 6px 12px; }
-                QPushButton:hover { background: #e3ebfb; }
-                QPushButton:pressed { background: #d6e1fb; }
-                QSpinBox { background: #ffffff; color: #0b1220; border: 1px solid #d8dce6; border-radius: 6px; padding: 4px; }
-                """
-            )
-        else:
-            self.setStyleSheet(
-                """
-                QMainWindow { background: #0f1115; }
-                QGroupBox { color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 12px; margin-top: 10px; }
-                QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0px 4px; }
-                QLabel, QLineEdit, QTreeView, QTableView, QTableWidget, QHeaderView::section { color: #d9deea; background: #161a22; }
-                QLineEdit { border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
-                QTreeView, QTableView, QTableWidget { gridline-color: #2a2f3a; selection-background-color: #2b3a55; selection-color: #ffffff; }
-                QToolBar { background: #0f1115; border-bottom: 1px solid #2a2f3a; }
-                QPushButton { background: #253042; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 10px; padding: 6px 12px; }
-                QPushButton:hover { background: #2b3a55; }
-                QPushButton:pressed { background: #1e2a3b; }
-                QSpinBox { background: #161a22; color: #eaeef8; border: 1px solid #2a2f3a; border-radius: 6px; padding: 4px; }
-                """
-            )
+        palette = ThemePalette.from_dict(self.config.palette_dict())
+        stylesheet = build_stylesheet(palette, self.config.font_family, self.config.font_size)
+        self.setStyleSheet(stylesheet)
+        app = QApplication.instance()
+        if app and hasattr(app, "setFont"):
+            try:
+                app.setFont(QFont(self.config.font_family, int(self.config.font_size)))
+            except Exception:
+                pass
 
     def _init_tray(self):
         """Initialise the optional system-tray icon and context menu."""
@@ -838,6 +866,8 @@ class MainWindow(QMainWindow):
             self.config.save()
             shutil.copy2(path, CONFIG_PATH)
             prev_theme = self.config.theme
+            prev_palette = self.config.palette_dict()
+            prev_typography = self.config.typography()
             prev_tray = self.config.tray_mode
             prev_startup = self.config.startup_enabled
             prev_show_system = self.config.show_system
@@ -851,10 +881,12 @@ class MainWindow(QMainWindow):
                 selected_group = ""
             self._rebuild_group_menu()
             self.targets_table.refresh(force=True)
-            if self.config.theme != prev_theme:
-                self._apply_theme_choice(
-                    self.config.theme, persist=False, previous=prev_theme
-                )
+            new_palette = self.config.palette_dict()
+            new_typography = self.config.typography()
+            if new_palette != prev_palette or new_typography != prev_typography:
+                self._apply_theme_update(new_palette, new_typography, persist=False)
+            elif self.config.theme != prev_theme:
+                self._apply_styles()
             if self.config.tray_mode != prev_tray:
                 self._apply_tray_mode(
                     self.config.tray_mode, persist=False, previous=prev_tray
@@ -1482,6 +1514,8 @@ class MainWindow(QMainWindow):
         """Open the settings dialog and persist any accepted changes."""
 
         prev_theme = self.config.theme
+        prev_palette = self.config.palette_dict()
+        prev_typography = self.config.typography()
         prev_tray_mode = self.config.tray_mode
         prev_startup = self.config.startup_enabled
         prev_show_system = self.config.show_system
@@ -1489,13 +1523,17 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
             theme_changed = self.config.theme != prev_theme
+            palette_changed = (
+                self.config.palette_dict() != prev_palette
+                or self.config.typography() != prev_typography
+            )
             tray_changed = self.config.tray_mode != prev_tray_mode
             startup_changed = self.config.startup_enabled != prev_startup
             show_system_changed = self.config.show_system != prev_show_system
 
-            if theme_changed:
-                self._apply_theme_choice(
-                    self.config.theme, persist=False, previous=prev_theme
+            if palette_changed or theme_changed:
+                self._apply_theme_update(
+                    self.config.palette_dict(), self.config.typography(), persist=False
                 )
             if tray_changed:
                 self._apply_tray_mode(

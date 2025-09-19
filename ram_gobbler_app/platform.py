@@ -29,7 +29,8 @@ def _install_qt_fallback() -> None:
     global QMessageBox, QAbstractItemView, QSplitter, QStyle, QTableWidget
     global QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout
     global QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox
-    global QListWidget, QInputDialog, QStackedWidget
+    global QListWidget, QInputDialog, QStackedWidget, QColorDialog, QColor
+    global QFontComboBox, QFont, QToolButton, QSizePolicy, QFrame
 
     QT_AVAILABLE = False
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -147,6 +148,29 @@ def _install_qt_fallback() -> None:
         SelectRows = 0
         NoEditTriggers = 0
 
+    class _DummyColor:
+        def __init__(self, value: str = "#000000"):
+            self._value = value
+
+        def name(self):  # pragma: no cover - fallback only
+            return self._value
+
+        def isValid(self):  # pragma: no cover - fallback only
+            return False
+
+    class _DummyColorDialog(_DummyObject):
+        @staticmethod
+        def getColor(*_, **__):  # pragma: no cover - fallback only
+            return _DummyColor()
+
+    class _DummySizePolicy:
+        Fixed = 0
+        Preferred = 1
+        Expanding = 2
+
+        def __init__(self, *_, **__):
+            pass
+
     Qt = types.SimpleNamespace(
         DisplayRole=0,
         ScrollBarAsNeeded=0,
@@ -202,6 +226,13 @@ def _install_qt_fallback() -> None:
     QListWidget = type("QListWidget", (_DummyObject,), {})
     QInputDialog = _DummyInputDialog
     QStackedWidget = type("QStackedWidget", (_DummyObject,), {})
+    QColorDialog = _DummyColorDialog
+    QColor = _DummyColor
+    QFontComboBox = type("QFontComboBox", (_DummyObject,), {})
+    QFont = type("QFont", (_DummyObject,), {})
+    QToolButton = type("QToolButton", (_DummyObject,), {})
+    QSizePolicy = _DummySizePolicy
+    QFrame = type("QFrame", (_DummyObject,), {})
 
 
 
@@ -222,7 +253,7 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QObject,
             Signal,
         )
-        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
+        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen, QColor, QFont
         from PySide6.QtWidgets import (
             QApplication,
             QMainWindow,
@@ -256,6 +287,11 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QListWidget,
             QInputDialog,
             QStackedWidget,
+            QColorDialog,
+            QFontComboBox,
+            QToolButton,
+            QSizePolicy,
+            QFrame,
         )
     except Exception:  # pragma: no cover - allows tests without Qt
         _install_qt_fallback()
@@ -408,6 +444,13 @@ __all__ = [
     "QListWidget",
     "QInputDialog",
     "QStackedWidget",
+    "QColorDialog",
+    "QColor",
+    "QFontComboBox",
+    "QFont",
+    "QToolButton",
+    "QSizePolicy",
+    "QFrame",
     "QT_AVAILABLE",
     "winreg",
     "wintypes",
