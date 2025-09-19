@@ -1087,7 +1087,6 @@ class TargetsTable(QTableWidget):
         "Totals MB (Sess/Day)",
         "History",
         "Interval (s)",
-        "Actions",
     ]
 
     def __init__(self, config: Config, gobbler):
@@ -1109,8 +1108,8 @@ class TargetsTable(QTableWidget):
         self.setHorizontalHeaderLabels(self.HEADERS)
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setStretchLastSection(False)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        header.setStretchLastSection(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1210,6 +1209,7 @@ class TargetsTable(QTableWidget):
             self.setUpdatesEnabled(True)
 
         self._restore_state(scroll_state, selected_uids)
+        QTimer.singleShot(0, self.resizeColumnsToContents)
 
     def _capture_state(self) -> Tuple[Tuple[int, int], List[str]]:
         """Remember scroll position and selected targets."""
@@ -1330,21 +1330,6 @@ class TargetsTable(QTableWidget):
             lambda i=idx, widget=interval_widget: self._commit_interval_widget(i, widget)
         )
 
-        actions_widget = QWidget()
-        hbox = QHBoxLayout(actions_widget)
-        hbox.setContentsMargins(0, 0, 0, 0)
-        btn_start = QPushButton("Gobble RAM")
-        btn_stop = QPushButton("Stop Gobbling")
-        btn_edit = QPushButton("Edit Rules…")
-        btn_remove = QPushButton("Remove")
-        btn_start.clicked.connect(lambda _=False, i=idx: self._on_start(i))
-        btn_stop.clicked.connect(lambda _=False, i=idx: self._on_stop(i))
-        btn_edit.clicked.connect(lambda _=False, i=idx: self._on_edit(i))
-        btn_remove.clicked.connect(lambda _=False, i=idx: self._on_remove(i))
-        for button in (btn_start, btn_stop, btn_edit, btn_remove):
-            button.setMinimumHeight(28)
-            hbox.addWidget(button)
-
         self.setCellWidget(row, 0, group_widget)
         self.setItem(row, 1, target_item)
         self.setItem(row, 2, match_item)
@@ -1354,17 +1339,11 @@ class TargetsTable(QTableWidget):
         self.setItem(row, 6, totals_item)
         self.setCellWidget(row, 7, spark)
         self.setCellWidget(row, 8, interval_widget)
-        self.setCellWidget(row, 9, actions_widget)
 
         for widget in (
             group_widget,
             autostart_cb,
             interval_widget,
-            actions_widget,
-            btn_start,
-            btn_stop,
-            btn_edit,
-            btn_remove,
         ):
             self._register_interaction(widget)
         if hasattr(interval_widget, "interaction_widgets"):
@@ -1372,7 +1351,7 @@ class TargetsTable(QTableWidget):
                 self._register_interaction(child)
 
     def contextMenuEvent(self, event):  # noqa: N802 - Qt API
-        """Provide a remove action when the user right-clicks a row."""
+        """Provide context actions when the user right-clicks a row."""
 
         if not hasattr(self, "rowAt"):
             return super().contextMenuEvent(event)
@@ -1385,11 +1364,33 @@ class TargetsTable(QTableWidget):
         if self.selectionModel() and not self.selectionModel().isRowSelected(row):
             self.selectionModel().clearSelection()
             self.selectRow(row)
+
+        target = None
+        if 0 <= config_index < len(self.config.targets):
+            target = self.config.targets[config_index]
+
         menu = QMenu(self)
+        start_action = menu.addAction("Gobble RAM")
+        stop_action = menu.addAction("Stop Gobbling")
+        edit_action = menu.addAction("Edit Rules…")
         remove_action = menu.addAction("Remove Target")
+
+        if target is not None:
+            start_action.setEnabled(not target.active)
+            stop_action.setEnabled(target.active)
+
         exec_fn = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
-        chosen = exec_fn(self.mapToGlobal(event.pos())) if exec_fn else None
-        if chosen == remove_action and config_index is not None:
+        if not exec_fn:
+            return super().contextMenuEvent(event)
+
+        chosen = exec_fn(self.mapToGlobal(event.pos()))
+        if chosen == start_action and target is not None:
+            self._on_start(config_index)
+        elif chosen == stop_action and target is not None:
+            self._on_stop(config_index)
+        elif chosen == edit_action:
+            self._on_edit(config_index)
+        elif chosen == remove_action:
             self._on_remove(config_index)
         else:
             super().contextMenuEvent(event)
