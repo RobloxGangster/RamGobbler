@@ -952,6 +952,8 @@ class ToggleSwitch(QPushButton):
         self._native_signals_work = False
         self._anim_progress = 0.0
         self._animation = None
+        self._track_off_color = "#0c0f19"
+        self._track_on_color = "#aebff5"
 
         set_checkable = getattr(self, "setCheckable", None)
         if callable(set_checkable):
@@ -1052,6 +1054,21 @@ class ToggleSwitch(QPushButton):
             finally:
                 self._block_emit = False
         self._emit_state_changed()
+
+    def set_track_colors(self, *, off: Optional[str] = None, on: Optional[str] = None) -> None:
+        """Adjust the colours used for the track background."""
+
+        changed = False
+        if isinstance(off, str) and off:
+            if off != getattr(self, "_track_off_color", "#0c0f19"):
+                self._track_off_color = off
+                changed = True
+        if isinstance(on, str) and on:
+            if on != getattr(self, "_track_on_color", "#aebff5"):
+                self._track_on_color = on
+                changed = True
+        if changed:
+            self._refresh_visuals()
 
     # -- Internal helpers ---------------------------------------------
     def _on_native_toggled(self, checked: bool):
@@ -1313,9 +1330,12 @@ class ToggleSwitch(QPushButton):
             knob_x = margin + travel * progress
             knob_y = (height - knob_diameter) / 2.0
 
-            track_color = self._blend_colors("#0c0f19", "#aebff5", progress)
+            off_hex = getattr(self, "_track_off_color", "#0c0f19") or "#0c0f19"
+            on_hex = getattr(self, "_track_on_color", "#aebff5") or "#aebff5"
+            track_color = self._blend_colors(off_hex, on_hex, progress)
             if track_color is None:
-                track_color = self._color("#aebff5" if progress >= 0.5 else "#0c0f19")
+                fallback = on_hex if progress >= 0.5 else off_hex
+                track_color = self._color(fallback)
 
             set_pen = getattr(painter, "setPen", None)
             set_brush = getattr(painter, "setBrush", None)
@@ -1888,6 +1908,8 @@ class TargetsTable(QTableWidget):
         self._row_config_indexes: List[Optional[int]] = []
         self._interaction = _InteractionWatcher(self)
         self._tracked_widgets: set[int] = set()
+        self._toggle_widgets: List[ToggleSwitch] = []
+        self._accent_color: Optional[str] = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self._flush_pending_refresh)
@@ -1935,6 +1957,21 @@ class TargetsTable(QTableWidget):
 
         self.group_filter = gid
         self.refresh(force=True)
+
+    def set_accent_color(self, color: str) -> None:
+        """Update the accent colour used by toggle switches."""
+
+        if not isinstance(color, str) or not color:
+            return
+        if color == getattr(self, "_accent_color", None):
+            return
+        self._accent_color = color
+        for toggle in list(self._toggle_widgets):
+            if hasattr(toggle, "set_track_colors"):
+                try:
+                    toggle.set_track_colors(on=color)
+                except Exception:
+                    continue
 
     def _group_name(self, gid: str) -> str:
         """Look up a display name for ``gid`` falling back to the id itself."""
@@ -1992,6 +2029,7 @@ class TargetsTable(QTableWidget):
             self.uid_to_row.clear()
             self._row_targets = []
             self._row_config_indexes = []
+            self._toggle_widgets.clear()
             if self.group_filter:
                 for idx, target in enumerate(self.config.targets):
                     if target.group_id == self.group_filter:
@@ -2111,6 +2149,7 @@ class TargetsTable(QTableWidget):
         autostart_cb.stateChanged.connect(
             lambda _=None, i=idx, cb=autostart_cb: self._on_autostart(i, cb.isChecked())
         )
+        self._register_toggle(autostart_cb)
 
         interval_widget = IntervalEditor(target.interval_sec, minimum=0.5, maximum=600.0, step=0.5)
         interval_widget.setToolTip("How often to gobble memory for this target")
@@ -2143,6 +2182,20 @@ class TargetsTable(QTableWidget):
         if hasattr(interval_widget, "interaction_widgets"):
             for child in interval_widget.interaction_widgets():
                 self._register_interaction(child)
+
+    def _register_toggle(self, toggle: ToggleSwitch) -> None:
+        """Track toggle widgets so palette updates can adjust their colours."""
+
+        if not toggle:
+            return
+        if toggle not in self._toggle_widgets:
+            self._toggle_widgets.append(toggle)
+        accent = getattr(self, "_accent_color", None)
+        if accent and hasattr(toggle, "set_track_colors"):
+            try:
+                toggle.set_track_colors(on=accent)
+            except Exception:
+                pass
 
     def _apply_status_width(self) -> None:
         """Keep the status column width fixed to avoid layout shifts."""
