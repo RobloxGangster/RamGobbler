@@ -966,12 +966,9 @@ class IntervalEditor(QWidget):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(6)
 
-        self.btn_down = QPushButton("-", self)
+        self.btn_down = QPushButton("−", self)
         self.btn_up = QPushButton("+", self)
-        for btn, color in (
-            (self.btn_down, "#c62828"),
-            (self.btn_up, "#2e7d32"),
-        ):
+        for btn in (self.btn_down, self.btn_up):
             if hasattr(btn, "setAutoDefault"):
                 btn.setAutoDefault(False)
             if hasattr(btn, "setDefault"):
@@ -994,15 +991,15 @@ class IntervalEditor(QWidget):
                 btn.setFont(font)
             if hasattr(btn, "setStyleSheet"):
                 btn.setStyleSheet(
-                    f"""
-                    QPushButton {{
+                    """
+                    QPushButton {
                         background-color: #AEBFF5;
                         border: 1px solid #8C9FD9;
                         border-radius: 4px;
                         font-size: 16px;
                         font-weight: bold;
-                        color: {color};
-                    }}
+                        color: #000000;
+                    }
                     """
                 )
             btn_layout.addWidget(btn)
@@ -1041,13 +1038,39 @@ class IntervalEditor(QWidget):
 
     def set_display_width(self, width: int) -> None:
         width = max(0, width)
+        extra_padding = 0
+        get_margins = getattr(self.line_edit, "textMargins", None)
+        if callable(get_margins):
+            try:
+                margins = get_margins()
+            except Exception:  # pragma: no cover - defensive
+                margins = None
+            if margins is not None:
+                left = getattr(margins, "left", None)
+                right = getattr(margins, "right", None)
+                if callable(left) and callable(right):
+                    extra_padding += left() + right()
+                elif isinstance(margins, tuple) and len(margins) == 4:
+                    extra_padding += margins[0] + margins[2]
+        if extra_padding <= 0:
+            # Account for padding applied by the global stylesheet.
+            extra_padding = 24
+        style_getter = getattr(self.line_edit, "style", None)
+        style = style_getter() if callable(style_getter) else None
+        if style and hasattr(style, "pixelMetric") and hasattr(QStyle, "PM_DefaultFrameWidth"):
+            try:
+                frame = style.pixelMetric(QStyle.PM_DefaultFrameWidth, None, self.line_edit)
+            except Exception:  # pragma: no cover - defensive
+                frame = 0
+            extra_padding += frame * 2
+        total_width = width + extra_padding
         if hasattr(self.line_edit, "setFixedWidth"):
-            self.line_edit.setFixedWidth(width)
+            self.line_edit.setFixedWidth(total_width)
         extra = 80  # space for buttons and layout spacing
         if hasattr(self, "setMinimumWidth"):
-            self.setMinimumWidth(width + extra)
+            self.setMinimumWidth(total_width + extra)
         if hasattr(self, "setMaximumWidth"):
-            self.setMaximumWidth(width + extra + 12)
+            self.setMaximumWidth(total_width + extra + 12)
 
     def value(self) -> float:
         return self._value
@@ -1416,10 +1439,10 @@ class TargetsTable(QTableWidget):
         interval_widget.setToolTip("How often to gobble memory for this target")
         metrics = interval_widget.fontMetrics()
         try:
-            digits_width = metrics.horizontalAdvance("0000")
+            digits_width = metrics.horizontalAdvance("0000.0")
         except AttributeError:  # pragma: no cover - Qt6 preferred API
-            digits_width = metrics.width("0000")  # type: ignore[attr-defined]
-        interval_widget.set_display_width(digits_width + 12)
+            digits_width = metrics.width("0000.0")  # type: ignore[attr-defined]
+        interval_widget.set_display_width(digits_width + 24)
         if hasattr(interval_widget, "setFocusPolicy") and hasattr(Qt, "StrongFocus"):
             interval_widget.setFocusPolicy(Qt.StrongFocus)
         interval_widget.valueChanged.connect(lambda val, i=idx: self._on_interval(i, val))
