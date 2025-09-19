@@ -351,9 +351,10 @@ class Gobbler(threading.Thread):
 
         event_ts = time.time()
         real_target: Optional[Target] = None
-        result_msg = "Stopped" if aborted else f"Gobbled {gobbled} procs, -{total_delta:.1f} MB"
-        if aborted and gobbled > 0:
-            result_msg = f"Stopped after {gobbled} procs, -{total_delta:.1f} MB"
+        reclaimed_text = f"{total_delta:.1f} MB reclaimed"
+        result_msg = reclaimed_text
+        if aborted:
+            result_msg = f"Stopped — {reclaimed_text}" if total_delta > 0 else "Stopped"
         with self._lock:
             try:
                 real_target = self.config.targets[index]

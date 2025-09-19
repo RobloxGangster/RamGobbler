@@ -88,6 +88,20 @@ class MainWindow(QMainWindow):
         tb = QToolBar()
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
+        if hasattr(tb, "setContentsMargins"):
+            tb.setContentsMargins(6, 4, 6, 4)
+        layout = tb.layout() if hasattr(tb, "layout") else None
+        if layout is not None:
+            try:
+                layout.setSpacing(4)
+                layout.setContentsMargins(6, 4, 6, 4)
+            except Exception:
+                pass
+        if hasattr(tb, "setStyleSheet"):
+            tb.setStyleSheet(
+                "QToolBar {spacing: 4px;} "
+                "QToolButton {padding: 4px 8px; margin-right: 4px;}"
+            )
 
         act_refresh = QAction(self.style().standardIcon(QStyle.SP_BrowserReload), "Refresh Processes", self)
         act_refresh.triggered.connect(self._refresh_processes)
@@ -181,6 +195,19 @@ class MainWindow(QMainWindow):
         self.btn_gobble_now.clicked.connect(self._gobble_selected)
         self.btn_add_selected = QPushButton("Add Selected as Target")
         self.btn_add_selected.clicked.connect(self._add_selected)
+        flat_button_style = (
+            "QPushButton {"
+            "background-color: #AEBFF5;"
+            "border: 1px solid #8C9FD9;"
+            "border-radius: 4px;"
+            "padding: 6px 12px;"
+            "}\n"
+            "QPushButton:pressed {background-color: #9FAFE8;}"
+        )
+        if hasattr(self.btn_gobble_now, "setStyleSheet"):
+            self.btn_gobble_now.setStyleSheet(flat_button_style)
+        if hasattr(self.btn_add_selected, "setStyleSheet"):
+            self.btn_add_selected.setStyleSheet(flat_button_style)
         search_row.addWidget(self.search)
         search_row.addWidget(self.btn_gobble_now)
         search_row.addWidget(self.btn_add_selected)
@@ -1490,17 +1517,12 @@ class MainWindow(QMainWindow):
         """Update UI elements after a manual gobble completes."""
 
         if aborted:
-            details: List[str] = []
-            if processed > 0:
-                plural = "processes" if processed != 1 else "process"
-                details.append(f"{processed} {plural}")
             if reclaimed > 0 and update_totals:
                 self.session_reclaimed_total += reclaimed
                 self._update_total_label()
-                details.append(f"−{reclaimed:.1f} MB")
             message = f"Stopped gobbling {display}"
-            if details:
-                message += f" ({', '.join(details)})"
+            if reclaimed > 0:
+                message += f" (−{reclaimed:.1f} MB)"
             if skipped:
                 message += f" ({skipped} protected skipped)"
             self.statusBar().showMessage(message, 3000)
@@ -1525,8 +1547,7 @@ class MainWindow(QMainWindow):
                 )
             return
 
-        plural = "processes" if processed > 1 else "process"
-        msg = f"Gobbled {display} ({processed} {plural}) −{reclaimed:.1f} MB"
+        msg = f"Gobbled {display} (−{reclaimed:.1f} MB)"
         if skipped:
             msg += f" ({skipped} protected skipped)"
         self.statusBar().showMessage(msg, 3000)
@@ -1755,7 +1776,7 @@ class MainWindow(QMainWindow):
         self.session_reclaimed_total += total_delta
         self._update_total_label()
         scope = self._group_name(self.current_group) if self.current_group else "visible targets"
-        msg = f"Gobbled {gobbled_ok}/{total_pids} processes (−{total_delta:.1f} MB) for {scope}"
+        msg = f"Gobbled {scope} (−{total_delta:.1f} MB)"
         self.statusBar().showMessage(msg, 4000)
         if getattr(self, "tray", None):
             self.tray.showMessage(APP_NAME, msg)
