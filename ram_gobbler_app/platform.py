@@ -30,7 +30,7 @@ def _install_qt_fallback() -> None:
     global QMessageBox, QAbstractItemView, QSplitter, QStyle, QTableWidget
     global QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout
     global QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox
-    global QListWidget, QInputDialog, QStackedWidget
+    global QListWidget, QInputDialog, QStackedWidget, QColorDialog, QButtonGroup, QRadioButton, QFrame
 
     QT_AVAILABLE = False
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -238,6 +238,14 @@ def _install_qt_fallback() -> None:
     QListWidget = type("QListWidget", (_DummyObject,), {})
     QInputDialog = _DummyInputDialog
     QStackedWidget = type("QStackedWidget", (_DummyObject,), {})
+    QButtonGroup = type("QButtonGroup", (_DummyObject,), {})
+    QRadioButton = type("QRadioButton", (_DummyObject,), {})
+    QFrame = type("QFrame", (_DummyObject,), {})
+    QColorDialog = type(
+        "QColorDialog",
+        (_DummyObject,),
+        {"DontUseNativeDialog": 0x00000002, "NoButtons": 0x00000010},
+    )
 
 
 
@@ -294,6 +302,10 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QListWidget,
             QInputDialog,
             QStackedWidget,
+            QColorDialog,
+            QButtonGroup,
+            QRadioButton,
+            QFrame,
         )
     except Exception:  # pragma: no cover - allows tests without Qt
         _install_qt_fallback()

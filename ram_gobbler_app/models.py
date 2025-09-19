@@ -117,6 +117,7 @@ class Config:
         self.targets: List[Target] = []
         self.groups: List[Group] = []
         self.theme: str = "dark"
+        self.theme_colors: dict[str, str] = self.default_theme_colors(self.theme)
         self.tray_mode: bool = True
         self.startup_enabled: bool = False
         self.hotkey: str = ""
@@ -173,10 +174,22 @@ class Config:
             self.daily_recap = raw.get("daily_recap", self.daily_recap)
             self.diag_level = int(raw.get("diag_level", 0))
             self.version = max(int(raw.get("version", 1)), 5)
+            raw_theme_colors = raw.get("theme_colors", {})
+            if isinstance(raw_theme_colors, dict):
+                self.theme_colors = {
+                    key: value
+                    for key, value in raw_theme_colors.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+            else:
+                self.theme_colors = {}
         except Exception:
             # A corrupted configuration should not prevent the UI from loading;
             # we simply start with an empty list of targets.
             self.targets = []
+        finally:
+            # Ensure theme palette always has sensible defaults.
+            self.theme_colors = self.theme_palette_overrides()
 
     def save(self) -> None:
         """Persist the current configuration, keeping timestamped backups."""
@@ -212,9 +225,65 @@ class Config:
             "daily_recap": self.daily_recap,
             "diag_level": self.diag_level,
             "version": self.version,
+            "theme_colors": self.theme_palette_overrides(),
         }
         with open(self.path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
+
+    @classmethod
+    def default_theme_colors(cls, theme: str) -> dict[str, str]:
+        """Return the baseline palette for ``theme``."""
+
+        defaults = {
+            "light": {
+                "text": "#111827",
+                "background": "#e7ecf6",
+                "button": "#4c6ef5",
+            },
+            "dark": {
+                "text": "#e5e9f5",
+                "background": "#0c0f19",
+                "button": "#5b82ff",
+            },
+        }
+        key = "light" if theme == "light" else "dark"
+        return dict(defaults[key])
+
+    def theme_palette(self) -> dict[str, str]:
+        """Combine theme defaults with any persisted overrides."""
+
+        palette = self.default_theme_colors(self.theme)
+        overrides = self.theme_palette_overrides()
+        palette.update(
+            {
+                key: value
+                for key, value in overrides.items()
+                if key in {"text", "background", "button"} and isinstance(value, str)
+            }
+        )
+        return palette
+
+    def theme_palette_overrides(self) -> dict[str, str]:
+        """Return validated overrides, falling back to defaults when empty."""
+
+        if not isinstance(self.theme_colors, dict):
+            return self.default_theme_colors(self.theme)
+        merged: dict[str, str] = {}
+        for key in ("text", "background", "button"):
+            value = self.theme_colors.get(key)
+            if isinstance(value, str) and value:
+                merged[key] = value
+        if len(merged) != 3:
+            defaults = self.default_theme_colors(self.theme)
+            for key, value in defaults.items():
+                merged.setdefault(key, value)
+        return merged
+
+    def reset_theme_colors(self, theme: Optional[str] = None) -> None:
+        """Reset colour overrides to the defaults for ``theme``."""
+
+        target_theme = theme if theme is not None else self.theme
+        self.theme_colors = self.default_theme_colors(target_theme)
 
 
 __all__ = ["Group", "Target", "Config", "CONFIG_PATH"]
