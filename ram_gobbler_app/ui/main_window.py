@@ -781,6 +781,12 @@ class MainWindow(QMainWindow):
 
         palette = build_palette(theme, self.config.theme_palette())
         self._active_palette = palette
+        targets_table = getattr(self, "targets_table", None)
+        if targets_table is not None and hasattr(targets_table, "set_accent_color"):
+            try:
+                targets_table.set_accent_color(palette.get("accent", ""))
+            except Exception:
+                pass
         stylesheet = f"""
             * {{
                 font-family: "Segoe UI", "Helvetica Neue", sans-serif;
