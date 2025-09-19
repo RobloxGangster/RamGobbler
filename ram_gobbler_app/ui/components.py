@@ -29,10 +29,12 @@ from ..system import is_system_process
 from ..platform import (
     QAction,
     QApplication,
+    QColorDialog,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QButtonGroup,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -47,8 +49,10 @@ from ..platform import (
     QPainter,
     QPen,
     QColor,
+    QFrame,
     QLineEdit,
     QKeySequenceEdit,
+    QRadioButton,
     QSpinBox,
     QStyle,
     QTableView,
@@ -2613,6 +2617,256 @@ class SettingsDialog(QDialog):
         self.cfg.battery_slow_factor = int(self.sb_batt_factor.value())
 
 
+class ColorSettingsDialog(QDialog):
+    """Dialog allowing users to customise the UI colour palette."""
+
+    TARGETS = [
+        ("text", "Text"),
+        ("background", "Background"),
+        ("button", "Buttons"),
+    ]
+
+    def __init__(self, colors: Dict[str, str], parent=None, theme: Optional[str] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Color Settings")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+
+        defaults = Config.default_theme_colors(theme or "dark")
+        self._colors: Dict[str, str] = {
+            key: self._normalise_hex(colors.get(key), defaults.get(key, "#000000"))
+            for key, _ in self.TARGETS
+        }
+        self._swatches: Dict[str, QFrame] = {}
+        self._labels: Dict[str, QLabel] = {}
+        self._radios: Dict[str, QRadioButton] = {}
+        self._button_group = QButtonGroup(self)
+        self._current_target = "text"
+        self._result: Dict[str, str] = {}
+
+        layout = QVBoxLayout(self)
+        content = QHBoxLayout()
+        content.setSpacing(16)
+        layout.addLayout(content, 1)
+
+        selector_widget = QWidget()
+        selector_layout = QVBoxLayout(selector_widget)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setSpacing(10)
+
+        for index, (key, label_text) in enumerate(self.TARGETS):
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            radio = QRadioButton(label_text)
+            self._button_group.addButton(radio)
+            row_layout.addWidget(radio, 1)
+            self._radios[key] = radio
+
+            swatch = QFrame()
+            swatch.setFixedSize(40, 20)
+            swatch.setFrameShape(QFrame.StyledPanel)
+            swatch.setLineWidth(1)
+            swatch.setCursor(Qt.PointingHandCursor)
+            row_layout.addWidget(swatch)
+
+            label = QLabel(self._colors[key].upper())
+            label.setMinimumWidth(80)
+            label.setCursor(Qt.PointingHandCursor)
+            row_layout.addWidget(label)
+
+            selector_layout.addWidget(row_widget)
+            self._swatches[key] = swatch
+            self._labels[key] = label
+
+            radio.toggled.connect(lambda checked, target=key: self._on_target_selected(target, checked))
+            swatch.mousePressEvent = lambda event, target=key: self._handle_swatch_click(target, event)
+            label.mousePressEvent = lambda event, target=key: self._handle_swatch_click(target, event)
+            if index == 0:
+                radio.setChecked(True)
+
+        selector_layout.addStretch(1)
+        content.addWidget(selector_widget, 0)
+
+        preview_container = QWidget()
+        preview_container.setMinimumWidth(260)
+        preview_layout = QVBoxLayout(preview_container)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(12)
+
+        hint = QLabel("Click a swatch to open the colour picker")
+        hint.setWordWrap(True)
+        preview_layout.addWidget(hint)
+
+        preview_layout.addStretch(1)
+        content.addWidget(preview_container, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        for key in self._colors:
+            self._update_preview(key)
+
+        self._highlight_selection()
+
+    @staticmethod
+    def _normalise_hex(value: Optional[str], fallback: str) -> str:
+        if not isinstance(value, str):
+            return fallback.lower()
+        candidate = value.strip()
+        if not candidate:
+            return fallback.lower()
+        if not candidate.startswith("#"):
+            candidate = f"#{candidate}"
+        if len(candidate) == 4:
+            candidate = "#" + "".join(ch * 2 for ch in candidate[1:])
+        if len(candidate) != 7:
+            return fallback.lower()
+        try:
+            int(candidate[1:], 16)
+        except ValueError:
+            return fallback.lower()
+        return candidate.lower()
+
+    def _on_target_selected(self, key: str, checked: bool) -> None:
+        if not checked or key == self._current_target:
+            return
+        self._current_target = key
+        self._highlight_selection()
+
+    def _highlight_selection(self) -> None:
+        for key, frame in self._swatches.items():
+            if frame is None:
+                continue
+            is_active = key == self._current_target
+            frame.setProperty("active", is_active)
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
+            self._update_preview(key)
+
+    def _handle_swatch_click(self, key: str, event) -> None:
+        button = getattr(event, "button", None)
+        if button is not None and button != Qt.LeftButton:
+            return
+        radio = self._radios.get(key)
+        if radio is not None and not radio.isChecked():
+            radio.setChecked(True)
+        self._open_picker(key)
+        if hasattr(event, "accept"):
+            try:
+                event.accept()
+            except Exception:
+                pass
+
+    def _open_picker(self, key: str) -> None:
+        current_hex = self._colors.get(key, "#000000")
+        current = QColor(current_hex)
+
+        selected = None
+        get_color = getattr(QColorDialog, "getColor", None)
+        if callable(get_color):
+            options_value = 0
+            option_attr = None
+            if hasattr(QColorDialog, "ColorDialogOption"):
+                option_attr = getattr(QColorDialog.ColorDialogOption, "DontUseNativeDialog", None)
+            if option_attr is None:
+                option_attr = getattr(QColorDialog, "DontUseNativeDialog", None)
+            if option_attr is not None:
+                try:
+                    options_ctor = getattr(QColorDialog, "ColorDialogOptions", None)
+                    if callable(options_ctor):
+                        options_value = options_ctor(option_attr)
+                    else:
+                        options_value = option_attr
+                except Exception:
+                    options_value = option_attr if isinstance(option_attr, int) else 0
+            try:
+                selected = get_color(current, self, "Select Colour", options_value)
+            except TypeError:
+                try:
+                    selected = get_color(current, self, "Select Colour")
+                except TypeError:
+                    selected = get_color(current, self)
+
+        if not isinstance(selected, QColor) or not selected.isValid():
+            dialog = QColorDialog(self)
+            try:
+                dialog.setOption(QColorDialog.DontUseNativeDialog, True)
+            except Exception:
+                pass
+            if hasattr(dialog, "setCurrentColor"):
+                try:
+                    dialog.setCurrentColor(current)
+                except Exception:
+                    pass
+            try:
+                result = dialog.exec()
+            except Exception:
+                result = dialog.exec_() if hasattr(dialog, "exec_") else QDialog.Rejected
+            if result != QDialog.Accepted:
+                return
+            picked = None
+            if hasattr(dialog, "selectedColor"):
+                try:
+                    picked = dialog.selectedColor()
+                except Exception:
+                    picked = None
+            if isinstance(picked, QColor) and picked.isValid():
+                selected = picked
+            elif hasattr(dialog, "currentColor"):
+                try:
+                    picked = dialog.currentColor()
+                except Exception:
+                    picked = None
+                if isinstance(picked, QColor) and picked.isValid():
+                    selected = picked
+
+        if not isinstance(selected, QColor) or not selected.isValid():
+            return
+
+        try:
+            name = selected.name()
+        except Exception:
+            name = current_hex
+
+        normalised = self._normalise_hex(name, current_hex)
+        self._colors[key] = normalised
+        self._update_preview(key)
+        if key == self._current_target:
+            self._highlight_selection()
+
+    def _update_preview(self, key: str) -> None:
+        color = self._colors.get(key, "#000000")
+        swatch = self._swatches.get(key)
+        label = self._labels.get(key)
+        if swatch is not None:
+            border = "2px solid #5b82ff" if swatch.property("active") else "1px solid rgba(0, 0, 0, 80)"
+            swatch.setStyleSheet(
+                "QFrame {"
+                f"background-color: {color};"
+                f"border: {border};"
+                "border-radius: 4px;"
+                "}"
+            )
+        if label is not None:
+            label.setText(color.upper())
+
+    def accept(self) -> None:  # noqa: D401 - Qt override
+        """Persist the currently selected colours and close."""
+
+        self._result = {key: value for key, value in self._colors.items()}
+        super().accept()
+
+    def colors(self) -> Dict[str, str]:
+        """Return the colours selected by the user."""
+
+        return dict(self._result)
+
+
 class ChartWidget(QWidget):
     """Simple bar chart used on the dashboard."""
 
@@ -2764,6 +3018,7 @@ __all__ = [
     "IntervalEditor",
     "TargetsTable",
     "AddTargetDialog",
+    "ColorSettingsDialog",
     "SettingsDialog",
     "ChartWidget",
     "Dashboard",
