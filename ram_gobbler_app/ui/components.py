@@ -966,7 +966,7 @@ class IntervalEditor(QWidget):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(6)
 
-        self.btn_down = QPushButton("−", self)
+        self.btn_down = QPushButton("-", self)
         self.btn_up = QPushButton("+", self)
         button_stylesheet = (
             """
@@ -1041,8 +1041,12 @@ class IntervalEditor(QWidget):
         rounded = round(value, 2)
         if abs(rounded - round(rounded)) < 1e-6:
             return str(int(round(rounded)))
-        text = f"{rounded:.1f}"
-        return text.rstrip("0").rstrip(".")
+        text = f"{rounded:.2f}".rstrip("0").rstrip(".")
+        if text.startswith("."):
+            return f"0{text}"
+        if text.startswith("-."):
+            return text.replace("-.", "-0.", 1)
+        return text
 
     def _update_display(self) -> None:
         text = self._format(self._value)
@@ -1051,6 +1055,25 @@ class IntervalEditor(QWidget):
 
     def set_display_width(self, width: int) -> None:
         width = max(0, width)
+        font_metrics = None
+        getter = getattr(self.line_edit, "fontMetrics", None)
+        if callable(getter):
+            try:
+                font_metrics = getter()
+            except Exception:  # pragma: no cover - defensive
+                font_metrics = None
+        if font_metrics is not None:
+            advance = getattr(font_metrics, "horizontalAdvance", None)
+            sample_text = "0000.00"
+            if callable(advance):
+                try:
+                    sample = advance(sample_text)
+                except Exception:  # pragma: no cover - defensive
+                    sample = 0
+            else:
+                width_fn = getattr(font_metrics, "width", None)
+                sample = width_fn(sample_text) if callable(width_fn) else 0
+            width = max(width, sample)
         extra_padding = 0
         get_margins = getattr(self.line_edit, "textMargins", None)
         if callable(get_margins):
@@ -1077,8 +1100,10 @@ class IntervalEditor(QWidget):
                 frame = 0
             extra_padding += frame * 2
         total_width = width + extra_padding
-        if hasattr(self.line_edit, "setFixedWidth"):
-            self.line_edit.setFixedWidth(total_width)
+        if hasattr(self.line_edit, "setMinimumWidth"):
+            self.line_edit.setMinimumWidth(total_width)
+        if hasattr(self.line_edit, "setMaximumWidth"):
+            self.line_edit.setMaximumWidth(total_width)
         extra = 80  # space for buttons and layout spacing
         if hasattr(self, "setMinimumWidth"):
             self.setMinimumWidth(total_width + extra)
