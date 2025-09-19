@@ -945,8 +945,8 @@ class ToggleSwitch(QPushButton):
 
         super().__init__("", parent)
         self._margin = 2.0
-        self._preferred_width = 24
-        self._preferred_height = 14
+        self._preferred_width = 30
+        self._preferred_height = 16
         self._checked = False
         self._block_emit = False
         self._native_signals_work = False
@@ -1311,13 +1311,27 @@ class ToggleSwitch(QPushButton):
                 except Exception:  # pragma: no cover - defensive fallback
                     pass
 
-            width = float(self.width() if hasattr(self, "width") else self._preferred_width)
-            height = float(self.height() if hasattr(self, "height") else self._preferred_height)
-            width = max(width, float(self._preferred_width))
-            height = max(height, float(self._preferred_height))
+            available_width = float(self.width() if hasattr(self, "width") else self._preferred_width)
+            available_height = float(self.height() if hasattr(self, "height") else self._preferred_height)
+            base_width = float(getattr(self, "_preferred_width", 0) or 0)
+            base_height = float(getattr(self, "_preferred_height", 0) or 0)
+            base_width = base_width if base_width > 0 else 30.0
+            base_height = base_height if base_height > 0 else 16.0
+            scale_candidates = [1.0]
+            if available_width > 0:
+                scale_candidates.append(available_width / base_width)
+            if available_height > 0:
+                scale_candidates.append(available_height / base_height)
+            scale = min(scale_candidates)
+            if scale <= 0:
+                scale = 1.0
+            width = max(base_width * scale, 1.0)
+            height = max(base_height * scale, 1.0)
+            x_offset = (available_width - width) / 2.0
+            y_offset = (available_height - height) / 2.0
             radius = height / 2.0
-            margin = max(self._margin, height * 0.18)
-            margin = min(margin, max(radius - 1.0, 1.0))
+            margin = max(self._margin * scale, height * 0.18)
+            margin = min(margin, max(radius - 1.0 * scale, 1.0 * scale))
             knob_diameter = max(height - 2.0 * margin, height * 0.58)
             knob_diameter = min(knob_diameter, width - 2.0 * margin)
             travel = max(width - 2.0 * margin - knob_diameter, 0.0)
@@ -1327,8 +1341,8 @@ class ToggleSwitch(QPushButton):
             except Exception:  # pragma: no cover - defensive fallback
                 progress = 0.0
             progress = max(0.0, min(1.0, progress))
-            knob_x = margin + travel * progress
-            knob_y = (height - knob_diameter) / 2.0
+            knob_x = x_offset + margin + travel * progress
+            knob_y = y_offset + (height - knob_diameter) / 2.0
 
             off_hex = getattr(self, "_track_off_color", "#0c0f19") or "#0c0f19"
             on_hex = getattr(self, "_track_on_color", "#aebff5") or "#aebff5"
@@ -1353,7 +1367,7 @@ class ToggleSwitch(QPushButton):
             draw_rounded = getattr(painter, "drawRoundedRect", None)
             if callable(draw_rounded):
                 try:
-                    draw_rounded(0.5, 0.5, width - 1.0, height - 1.0, radius, radius)
+                    draw_rounded(x_offset + 0.5, y_offset + 0.5, width - 1.0, height - 1.0, radius, radius)
                 except Exception:  # pragma: no cover - defensive fallback
                     pass
 
@@ -1373,8 +1387,15 @@ class ToggleSwitch(QPushButton):
                             pass
                     if callable(draw_rounded):
                         try:
-                            highlight_height = (height - 2.0) * 0.45
-                            draw_rounded(1.0, 1.0, width - 2.0, highlight_height, radius - 1.2, radius - 1.2)
+                            highlight_height = max((height - 2.0 * scale) * 0.45, 0.0)
+                            draw_rounded(
+                                x_offset + 1.0,
+                                y_offset + 1.0,
+                                width - 2.0,
+                                highlight_height,
+                                max(radius - 1.2 * scale, 0.0),
+                                max(radius - 1.2 * scale, 0.0),
+                            )
                         except Exception:  # pragma: no cover - defensive fallback
                             pass
                 finally:
@@ -1394,7 +1415,7 @@ class ToggleSwitch(QPushButton):
             draw_ellipse = getattr(painter, "drawEllipse", None)
             if callable(draw_ellipse):
                 try:
-                    shadow_offset = max(height * 0.08, 1.0)
+                    shadow_offset = max(height * 0.08, 1.0 * scale)
                     draw_ellipse(knob_x, knob_y + shadow_offset, knob_diameter, knob_diameter)
                 except Exception:  # pragma: no cover - defensive fallback
                     pass
@@ -1409,7 +1430,7 @@ class ToggleSwitch(QPushButton):
                 except Exception:  # pragma: no cover - defensive fallback
                     pass
             set_width = getattr(knob_pen, "setWidthF", None)
-            border_width = max(height * 0.045, 0.6)
+            border_width = max(height * 0.045, 0.6 * scale)
             if callable(set_width):
                 try:
                     set_width(border_width)
@@ -1448,7 +1469,12 @@ class ToggleSwitch(QPushButton):
                     if callable(draw_ellipse):
                         try:
                             inset = knob_diameter * 0.24
-                            draw_ellipse(knob_x + inset, knob_y + inset, knob_diameter - 2 * inset, knob_diameter - 2 * inset)
+                            draw_ellipse(
+                                knob_x + inset,
+                                knob_y + inset,
+                                knob_diameter - 2 * inset,
+                                knob_diameter - 2 * inset,
+                            )
                         except Exception:  # pragma: no cover - defensive fallback
                             pass
                 finally:
