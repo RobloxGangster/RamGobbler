@@ -31,6 +31,8 @@ from ..platform import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QColor,
+    QColorDialog,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -45,14 +47,18 @@ from ..platform import (
     QMenu,
     QObject,
     QPainter,
+    QFont,
+    QFontComboBox,
     QPen,
     QLineEdit,
     QKeySequenceEdit,
     QSpinBox,
+    QSizePolicy,
     QStyle,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     Qt,
@@ -69,6 +75,7 @@ from ..platform import (
 
 from groups import group_totals
 from metrics import Metrics
+from .theme import ThemePalette
 
 
 class ProcessTableModel(QAbstractTableModel):
@@ -1777,6 +1784,286 @@ class AddTargetDialog(QDialog):
         )
 
 
+def _luminance(color: str) -> float:
+    color = (color or "").lstrip("#")
+    if len(color) != 6:
+        color = "000000"
+    r = int(color[0:2], 16) / 255.0
+    g = int(color[2:4], 16) / 255.0
+    b = int(color[4:6], 16) / 255.0
+    channels = []
+    for channel in (r, g, b):
+        if channel <= 0.03928:
+            channels.append(channel / 12.92)
+        else:
+            channels.append(((channel + 0.055) / 1.055) ** 2.4)
+    r_l, g_l, b_l = channels
+    return 0.2126 * r_l + 0.7152 * g_l + 0.0722 * b_l
+
+
+class _ColorSelector(QWidget):
+    """Compact widget showing a colour swatch with a dialog trigger."""
+
+    color_changed = Signal(str)
+
+    def __init__(self, label: str, color: str, parent=None):
+        super().__init__(parent)
+        self._label = label
+        self._color = color.upper()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self.caption = QLabel(label)
+        self.caption.setAlignment(Qt.AlignHCenter)
+        self.btn = QToolButton()
+        self.btn.setAutoRaise(True)
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.setFixedSize(34, 34)
+        self.btn.clicked.connect(self._choose_color)
+        self.hex_display = QLabel(self._color)
+        self.hex_display.setAlignment(Qt.AlignHCenter)
+        font = self.hex_display.font()
+        font.setPointSize(max(8, font.pointSize() - 1))
+        self.hex_display.setFont(font)
+        layout.addWidget(self.caption)
+        layout.addWidget(self.btn, alignment=Qt.AlignHCenter)
+        layout.addWidget(self.hex_display)
+        self._update()
+
+    def color(self) -> str:
+        return self._color
+
+    def set_color(self, color: str) -> None:
+        color = (color or "").strip()
+        if not color.startswith("#"):
+            color = f"#{color}"
+        if len(color) != 7:
+            return
+        self._color = color.upper()
+        self._update()
+
+    def _update(self) -> None:
+        outline = "#0D101A" if _luminance(self._color) > 0.6 else "#FFFFFF"
+        self.btn.setStyleSheet(
+            f"border-radius: 17px; border: 2px solid {outline}; background-color: {self._color};"
+        )
+        self.hex_display.setText(self._color)
+
+    def _choose_color(self) -> None:
+        try:
+            base = QColor(self._color)
+        except Exception:
+            base = None
+        chosen = QColorDialog.getColor(base, self, f"Select {self._label} Color")
+        hex_color = None
+        if hasattr(chosen, "isValid") and chosen.isValid():
+            try:
+                hex_color = chosen.name()
+            except Exception:
+                hex_color = None
+        if not hex_color:
+            return
+        self.set_color(hex_color)
+        self.color_changed.emit(self._color)
+
+
+class ThemeCustomizer(QWidget):
+    """Interactive palette editor surfaced in the toolbar and settings."""
+
+    previewChanged = Signal(dict, dict)
+    applyRequested = Signal(dict, dict)
+    resetRequested = Signal(dict, dict)
+
+    def __init__(self, config: Config, *, compact: bool = False, show_apply_reset: bool = True, parent=None):
+        super().__init__(parent)
+        self._config = config
+        self._palette = dict(config.palette_dict())
+        self._defaults = config.default_palette()
+        self._typography = dict(config.typography())
+        self._typography_defaults = Config.default_typography()
+        self._color_controls: Dict[str, _ColorSelector] = {}
+        self._compact = bool(compact)
+        self._show_apply_reset = bool(show_apply_reset)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 6, 12, 6)
+        layout.setSpacing(6)
+
+        color_row = QHBoxLayout()
+        color_row.setContentsMargins(0, 0, 0, 0)
+        color_row.setSpacing(10)
+        for key, label in [
+            ("primary", "Primary"),
+            ("secondary", "Secondary"),
+            ("text", "Text"),
+            ("button", "Button"),
+        ]:
+            selector = _ColorSelector(label, self._palette.get(key, "#000000"))
+            selector.color_changed.connect(lambda value, role=key: self._on_color_changed(role, value))
+            self._color_controls[key] = selector
+            color_row.addWidget(selector)
+        color_row.addStretch(1)
+        layout.addLayout(color_row)
+
+        font_row = QHBoxLayout()
+        font_row.setContentsMargins(0, 0, 0, 0)
+        font_row.setSpacing(8)
+        lbl_font = QLabel("Font")
+        self.font_box = QFontComboBox()
+        try:
+            self.font_box.setCurrentFont(QFont(self._typography.get("family", "Segoe UI")))
+        except Exception:
+            pass
+        self.font_box.currentFontChanged.connect(self._on_font_changed)
+        lbl_size = QLabel("Size")
+        self.font_size = QSpinBox()
+        self.font_size.setRange(8, 24)
+        self.font_size.setValue(int(self._typography.get("size", 11)))
+        self.font_size.valueChanged.connect(self._emit_preview)
+        font_row.addWidget(lbl_font)
+        font_row.addWidget(self.font_box)
+        font_row.addSpacing(4)
+        font_row.addWidget(lbl_size)
+        font_row.addWidget(self.font_size)
+        font_row.addStretch(1)
+        layout.addLayout(font_row)
+
+        self.preview_card = QFrame()
+        self.preview_card.setObjectName("themePreviewCard")
+        preview_layout = QVBoxLayout(self.preview_card)
+        preview_layout.setContentsMargins(14, 12, 14, 12)
+        preview_layout.setSpacing(6)
+        self.preview_heading = QLabel("Memory Monitor")
+        self.preview_heading.setProperty("heading", True)
+        self.preview_body = QLabel("Buttons and typography update before you commit.")
+        self.preview_body.setWordWrap(True)
+        self.preview_button = QPushButton("Accent Action")
+        preview_layout.addWidget(self.preview_heading)
+        preview_layout.addWidget(self.preview_body)
+        preview_layout.addWidget(self.preview_button, alignment=Qt.AlignLeft)
+        layout.addWidget(self.preview_card)
+
+        if show_apply_reset:
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.addStretch(1)
+            self.btn_reset = QPushButton("Reset")
+            self.btn_apply = QPushButton("Apply")
+            self.btn_reset.clicked.connect(self.reset_to_defaults)
+            self.btn_apply.clicked.connect(self._on_apply)
+            btn_row.addWidget(self.btn_reset)
+            btn_row.addWidget(self.btn_apply)
+            layout.addLayout(btn_row)
+        else:
+            self.btn_reset = None
+            self.btn_apply = None
+
+        policy = QSizePolicy(QSizePolicy.Maximum if self._compact else QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setSizePolicy(policy)
+        if self._compact:
+            self.preview_card.setMaximumWidth(280)
+
+        self._update_preview()
+        self._emit_preview()
+
+    def current_palette(self) -> dict:
+        return dict(self._palette)
+
+    def current_typography(self) -> dict:
+        family = (
+            self.font_box.currentFont().family()
+            if hasattr(self.font_box, "currentFont")
+            else self._typography.get("family", "Segoe UI")
+        )
+        size = int(self.font_size.value())
+        self._typography["family"] = family
+        self._typography["size"] = size
+        return {"family": family, "size": size}
+
+    def set_palette(self, palette: dict) -> None:
+        self._palette.update(palette or {})
+        for key, selector in self._color_controls.items():
+            selector.set_color(self._palette.get(key, selector.color()))
+        self._update_preview()
+
+    def set_typography(self, typography: dict) -> None:
+        family = typography.get("family", self._typography.get("family", "Segoe UI"))
+        size = typography.get("size", self._typography.get("size", 11))
+        self._typography["family"] = family
+        self._typography["size"] = size
+        try:
+            self.font_box.blockSignals(True)
+            self.font_box.setCurrentFont(QFont(family))
+        except Exception:
+            pass
+        finally:
+            if hasattr(self.font_box, "blockSignals"):
+                self.font_box.blockSignals(False)
+        try:
+            self.font_size.blockSignals(True)
+            self.font_size.setValue(int(size))
+        finally:
+            self.font_size.blockSignals(False)
+        self._update_preview()
+
+    def _on_color_changed(self, role: str, value: str) -> None:
+        self._palette[role] = value
+        self._update_preview()
+        self._emit_preview()
+
+    def _on_font_changed(self, font: QFont) -> None:  # type: ignore[override]
+        family = font.family() if hasattr(font, "family") else self._typography.get("family", "Segoe UI")
+        self._typography["family"] = family
+        self._update_preview()
+        self._emit_preview()
+
+    def _on_apply(self) -> None:
+        self.applyRequested.emit(self.current_palette(), self.current_typography())
+
+    def reset_to_defaults(self) -> None:
+        self._palette.update(self._defaults)
+        for key, selector in self._color_controls.items():
+            selector.set_color(self._defaults.get(key, selector.color()))
+        self.set_typography(self._typography_defaults)
+        self._update_preview()
+        state = (self.current_palette(), self.current_typography())
+        self.resetRequested.emit(*state)
+        self.previewChanged.emit(*state)
+
+    def sync_defaults(self, config: Config) -> None:
+        """Refresh the baseline defaults from the configuration."""
+
+        self._defaults = config.default_palette()
+        self._typography_defaults = Config.default_typography()
+
+    def _emit_preview(self) -> None:
+        state = (self.current_palette(), self.current_typography())
+        self.previewChanged.emit(*state)
+
+    def _update_preview(self) -> None:
+        palette = ThemePalette.from_dict(self._palette)
+        typography = self.current_typography()
+        card_style = (
+            f"QFrame#themePreviewCard {{"
+            f"background-color: {palette.surface};"
+            f"border: 1px solid {palette.border};"
+            f"border-radius: 12px;"
+            f"padding: 14px;"
+            f"}}"
+        )
+        self.preview_card.setStyleSheet(card_style)
+        heading_font = QFont(typography.get("family", "Segoe UI"), max(8, typography.get("size", 11) + 2))
+        body_font = QFont(typography.get("family", "Segoe UI"), max(8, typography.get("size", 11)))
+        self.preview_heading.setFont(heading_font)
+        self.preview_body.setFont(body_font)
+        self.preview_body.setStyleSheet(f"color: {palette.muted_text};")
+        button_style = (
+            f"QPushButton {{background-color: {palette.button}; color: {palette.button_text}; border-radius: 8px; padding: 6px 14px;}}"
+            f"QPushButton:hover {{background-color: {palette.button_hover};}}"
+            f"QPushButton:pressed {{background-color: {palette.button_pressed};}}"
+        )
+        self.preview_button.setStyleSheet(button_style)
+
 class SettingsDialog(QDialog):
     """Global application settings editor."""
 
@@ -1789,16 +2076,15 @@ class SettingsDialog(QDialog):
         self.cfg = config
 
         form = QFormLayout(self)
-        self.cmb_theme = QComboBox()
-        self.cmb_theme.addItem("Dark", "dark")
-        self.cmb_theme.addItem("Light", "light")
-        idx = self.cmb_theme.findData(config.theme)
-        if idx >= 0:
-            self.cmb_theme.setCurrentIndex(idx)
-        else:
-            fallback = self.cmb_theme.findData("dark")
-            if fallback >= 0:
-                self.cmb_theme.setCurrentIndex(fallback)
+        self.theme_customizer = ThemeCustomizer(config, compact=False, show_apply_reset=False, parent=self)
+        theme_container = QWidget()
+        theme_layout = QHBoxLayout(theme_container)
+        theme_layout.setContentsMargins(0, 0, 0, 0)
+        theme_layout.setSpacing(8)
+        theme_layout.addWidget(self.theme_customizer, 1)
+        self.btn_theme_reset = QPushButton("Reset palette")
+        self.btn_theme_reset.clicked.connect(self.theme_customizer.reset_to_defaults)
+        theme_layout.addWidget(self.btn_theme_reset, 0, Qt.AlignTop)
         self.kse = QKeySequenceEdit()
         if config.hotkey:
             self.kse.setKeySequence(config.hotkey)
@@ -1826,7 +2112,7 @@ class SettingsDialog(QDialog):
         self.sb_batt_factor.setRange(1, 4)
         self.sb_batt_factor.setValue(int(config.battery_slow_factor))
 
-        form.addRow("Theme:", self.cmb_theme)
+        form.addRow("Theme & typography:", theme_container)
         form.addRow("Global hotkey:", self.kse)
         form.addRow("Wake behaviour:", self.cb_wake)
         form.addRow("Show system processes:", self.cb_show_system)
@@ -1853,8 +2139,11 @@ class SettingsDialog(QDialog):
         self.cfg.show_system = bool(self.cb_show_system.isChecked())
         self.cfg.protect_system = bool(self.cb_protect_system.isChecked())
         self.cfg.pressure_enabled = bool(self.cb_pressure.isChecked())
-        theme = self.cmb_theme.currentData()
-        self.cfg.theme = theme if theme in {"light", "dark"} else "dark"
+        palette = self.theme_customizer.current_palette()
+        typography = self.theme_customizer.current_typography()
+        self.cfg.apply_palette(palette)
+        self.cfg.apply_typography(typography)
+        self.cfg.theme = "dark" if _luminance(palette.get("text", "#FFFFFF")) >= 0.55 else "light"
         self.cfg.tray_mode = bool(self.cb_tray_mode.isChecked())
         self.cfg.startup_enabled = bool(self.cb_startup.isChecked())
         self.cfg.min_free_percent = int(self.sb_min_free.value())
@@ -1903,8 +2192,11 @@ class Dashboard(QWidget):
         self.config = config
         self.metrics = metrics
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 18)
+        layout.setSpacing(16)
 
         card_row = QHBoxLayout()
+        card_row.setSpacing(12)
         self.lbl_session = QLabel("0.0")
         self.lbl_day = QLabel("0.0")
         self.lbl_week = QLabel("0.0")
@@ -1917,6 +2209,8 @@ class Dashboard(QWidget):
         ]:
             box = QGroupBox(label)
             box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(12, 12, 12, 12)
+            box_layout.setSpacing(4)
             box_layout.addWidget(widget)
             card_row.addWidget(box)
         layout.addLayout(card_row)
@@ -1924,17 +2218,22 @@ class Dashboard(QWidget):
         self.top_table = QTableWidget(0, 2)
         self.top_table.setHorizontalHeaderLabels(["Top Saver", "MB"])
         self.top_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.top_table.setAlternatingRowColors(True)
+        self.top_table.setShowGrid(False)
         layout.addWidget(self.top_table)
 
         self.eff_table = QTableWidget(0, 2)
         self.eff_table.setHorizontalHeaderLabels(["Strategy", "Avg MB/Gobble"])
         self.eff_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.eff_table.setAlternatingRowColors(True)
+        self.eff_table.setShowGrid(False)
         layout.addWidget(self.eff_table)
 
         self.chart = ChartWidget([])
         layout.addWidget(self.chart)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
         self.btn_day_json = QPushButton("Export Day JSON")
         self.btn_day_csv = QPushButton("Export Day CSV")
         self.btn_month_json = QPushButton("Export 30-day JSON")
@@ -2014,6 +2313,7 @@ __all__ = [
     "IntervalEditor",
     "TargetsTable",
     "AddTargetDialog",
+    "ThemeCustomizer",
     "SettingsDialog",
     "ChartWidget",
     "Dashboard",
