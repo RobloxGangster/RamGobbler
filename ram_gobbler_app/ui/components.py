@@ -2408,7 +2408,22 @@ class TargetsTable(QTableWidget):
         status_item = self.item(row, 4)
         if status_item:
             state = "Gobbling" if target.active else "Idle"
-            status_item.setText(f"{state} — {message}")
+            text = f"{state} — {message}" if message else state
+            status_item.setText(text)
+            status_item.setToolTip(text)
+
+        interval_widget = self.cellWidget(row, 5)
+        if isinstance(interval_widget, IntervalEditor):
+            try:
+                current = float(interval_widget.value())
+            except Exception:
+                current = float("nan")
+            desired = float(getattr(target, "interval_sec", 0.0))
+            if not (abs(current - desired) < 1e-6):
+                try:
+                    interval_widget.setValue(desired)
+                except Exception:
+                    pass
 
     def _flush_pending_refresh(self):
         """Execute a deferred refresh after the user stops interacting."""
