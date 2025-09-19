@@ -125,17 +125,6 @@ class MainWindow(QMainWindow):
         self.act_view.triggered.connect(self._toggle_view)
         tb.addAction(self.act_view)
 
-        m_profiles = QMenu("Profiles", self)
-        for label, secs in [("Balanced (15s)", 15), ("Aggressive (8s)", 8), ("Gentle (30s)", 30)]:
-            action = QAction(label, self)
-            action.triggered.connect(lambda _, s=secs: self._apply_profile(s))
-            m_profiles.addAction(action)
-        btn_profiles = QAction("Profiles", self)
-        btn_profiles.setMenu(m_profiles)
-        tb.addAction(btn_profiles)
-
-        tb.addSeparator()
-
         self.act_export = QAction("Export Settings…", self)
         self.act_export.triggered.connect(self._export_settings)
         tb.addAction(self.act_export)
