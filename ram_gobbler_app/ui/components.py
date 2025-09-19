@@ -966,7 +966,7 @@ class IntervalEditor(QWidget):
         btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(6)
 
-        self.btn_down = QPushButton("−", self)
+        self.btn_down = QPushButton("-", self)
         self.btn_up = QPushButton("+", self)
         for btn, color in (
             (self.btn_down, "#c62828"),
@@ -978,10 +978,20 @@ class IntervalEditor(QWidget):
                 btn.setDefault(False)
             if hasattr(btn, "setFocusPolicy") and hasattr(Qt, "NoFocus"):
                 btn.setFocusPolicy(Qt.NoFocus)
+            if hasattr(btn, "setFlat"):
+                btn.setFlat(True)
             if hasattr(btn, "setFixedWidth"):
                 btn.setFixedWidth(34)
             if hasattr(btn, "setFixedHeight"):
                 btn.setFixedHeight(28)
+            if hasattr(btn, "setFont"):
+                font = btn.font()
+                font.setBold(True)
+                if font.pointSize() <= 0:
+                    font.setPointSize(12)
+                else:
+                    font.setPointSize(max(font.pointSize(), 12))
+                btn.setFont(font)
             if hasattr(btn, "setStyleSheet"):
                 btn.setStyleSheet(
                     f"""
@@ -1188,6 +1198,21 @@ class TargetsTable(QTableWidget):
         header = self.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
+        self.setWordWrap(False)
+
+        metrics = self.fontMetrics()
+        sample_status = "Gobbling — 8888.8 MB reclaimed"
+        try:
+            status_width = metrics.horizontalAdvance(sample_status)
+        except AttributeError:  # pragma: no cover - Qt6 preferred API
+            status_width = metrics.width(sample_status)  # type: ignore[attr-defined]
+        status_width += 32
+        self._status_column_width = status_width
+        try:
+            header.setSectionResizeMode(4, QHeaderView.Fixed)
+            self.setColumnWidth(4, self._status_column_width)
+        except Exception:
+            pass
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.verticalHeader().setVisible(False)
@@ -1205,6 +1230,7 @@ class TargetsTable(QTableWidget):
             self._register_interaction(hbar)
         self.refresh(force=True)
         QTimer.singleShot(0, self.resizeColumnsToContents)
+        QTimer.singleShot(0, self._apply_status_width)
 
     def set_group_filter(self, gid: str):
         """Show only rows belonging to the specified group id."""
@@ -1289,6 +1315,7 @@ class TargetsTable(QTableWidget):
 
         self._restore_state(scroll_state, selected_uids)
         QTimer.singleShot(0, self.resizeColumnsToContents)
+        QTimer.singleShot(0, self._apply_status_width)
 
     def _capture_state(self) -> Tuple[Tuple[int, int], List[str]]:
         """Remember scroll position and selected targets."""
@@ -1379,6 +1406,7 @@ class TargetsTable(QTableWidget):
         if target.last_result:
             status_text += f" — {target.last_result}"
         status_item = QTableWidgetItem(status_text)
+        status_item.setToolTip(status_text)
 
         autostart_cb = QCheckBox()
         autostart_cb.setChecked(target.autostart)
@@ -1415,6 +1443,23 @@ class TargetsTable(QTableWidget):
         if hasattr(interval_widget, "interaction_widgets"):
             for child in interval_widget.interaction_widgets():
                 self._register_interaction(child)
+
+    def _apply_status_width(self) -> None:
+        """Keep the status column width fixed to avoid layout shifts."""
+
+        width = getattr(self, "_status_column_width", 0)
+        if width <= 0 or not hasattr(self, "setColumnWidth"):
+            return
+        header = self.horizontalHeader() if hasattr(self, "horizontalHeader") else None
+        if header and hasattr(header, "setSectionResizeMode"):
+            try:
+                header.setSectionResizeMode(4, QHeaderView.Fixed)
+            except Exception:
+                pass
+        try:
+            self.setColumnWidth(4, width)
+        except Exception:
+            pass
 
     def contextMenuEvent(self, event):  # noqa: N802 - Qt API
         """Provide context actions when the user right-clicks a row."""
