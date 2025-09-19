@@ -962,13 +962,16 @@ class IntervalEditor(QWidget):
             self.line_edit.setAlignment(Qt.AlignRight)
         layout.addWidget(self.line_edit)
 
-        btn_layout = QVBoxLayout()
+        btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(2)
+        btn_layout.setSpacing(6)
 
-        self.btn_up = QPushButton("▲", self)
-        self.btn_down = QPushButton("▼", self)
-        for btn in (self.btn_up, self.btn_down):
+        self.btn_down = QPushButton("−", self)
+        self.btn_up = QPushButton("+", self)
+        for btn, color in (
+            (self.btn_down, "#c62828"),
+            (self.btn_up, "#2e7d32"),
+        ):
             if hasattr(btn, "setAutoDefault"):
                 btn.setAutoDefault(False)
             if hasattr(btn, "setDefault"):
@@ -976,9 +979,13 @@ class IntervalEditor(QWidget):
             if hasattr(btn, "setFocusPolicy") and hasattr(Qt, "NoFocus"):
                 btn.setFocusPolicy(Qt.NoFocus)
             if hasattr(btn, "setFixedWidth"):
-                btn.setFixedWidth(28)
+                btn.setFixedWidth(34)
             if hasattr(btn, "setFixedHeight"):
-                btn.setFixedHeight(18)
+                btn.setFixedHeight(28)
+            if hasattr(btn, "setStyleSheet"):
+                btn.setStyleSheet(
+                    f"color: {color}; font-size: 16px; font-weight: bold;"
+                )
             btn_layout.addWidget(btn)
 
         layout.addLayout(btn_layout)
@@ -1017,7 +1024,7 @@ class IntervalEditor(QWidget):
         width = max(0, width)
         if hasattr(self.line_edit, "setFixedWidth"):
             self.line_edit.setFixedWidth(width)
-        extra = 36  # space for buttons and layout spacing
+        extra = 80  # space for buttons and layout spacing
         if hasattr(self, "setMinimumWidth"):
             self.setMinimumWidth(width + extra)
         if hasattr(self, "setMaximumWidth"):
