@@ -29,10 +29,12 @@ from ..system import is_system_process
 from ..platform import (
     QAction,
     QApplication,
+    QColorDialog,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QButtonGroup,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -47,8 +49,10 @@ from ..platform import (
     QPainter,
     QPen,
     QColor,
+    QFrame,
     QLineEdit,
     QKeySequenceEdit,
+    QRadioButton,
     QSpinBox,
     QStyle,
     QTableView,
@@ -2613,6 +2617,175 @@ class SettingsDialog(QDialog):
         self.cfg.battery_slow_factor = int(self.sb_batt_factor.value())
 
 
+class ColorSettingsDialog(QDialog):
+    """Dialog allowing users to customise the UI colour palette."""
+
+    TARGETS = [
+        ("text", "Text"),
+        ("background", "Background"),
+        ("button", "Buttons"),
+    ]
+
+    def __init__(self, colors: Dict[str, str], parent=None, theme: Optional[str] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Color Settings")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+
+        defaults = Config.default_theme_colors(theme or "dark")
+        self._colors: Dict[str, str] = {
+            key: self._normalise_hex(colors.get(key), defaults.get(key, "#000000"))
+            for key, _ in self.TARGETS
+        }
+        self._swatches: Dict[str, QFrame] = {}
+        self._labels: Dict[str, QLabel] = {}
+        self._button_group = QButtonGroup(self)
+        self._current_target = "text"
+        self._updating = False
+        self._result: Dict[str, str] = {}
+
+        layout = QVBoxLayout(self)
+        content = QHBoxLayout()
+        content.setSpacing(16)
+        layout.addLayout(content, 1)
+
+        selector_widget = QWidget()
+        selector_layout = QVBoxLayout(selector_widget)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setSpacing(10)
+
+        for index, (key, label_text) in enumerate(self.TARGETS):
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            radio = QRadioButton(label_text)
+            self._button_group.addButton(radio)
+            row_layout.addWidget(radio, 1)
+
+            swatch = QFrame()
+            swatch.setFixedSize(40, 20)
+            swatch.setFrameShape(QFrame.StyledPanel)
+            swatch.setLineWidth(1)
+            row_layout.addWidget(swatch)
+
+            label = QLabel(self._colors[key].upper())
+            label.setMinimumWidth(80)
+            row_layout.addWidget(label)
+
+            selector_layout.addWidget(row_widget)
+            self._swatches[key] = swatch
+            self._labels[key] = label
+
+            radio.toggled.connect(lambda checked, target=key: self._on_target_selected(target, checked))
+            if index == 0:
+                radio.setChecked(True)
+
+        selector_layout.addStretch(1)
+        content.addWidget(selector_widget, 0)
+
+        self.color_dialog = QColorDialog(self)
+        try:
+            self.color_dialog.setOption(QColorDialog.DontUseNativeDialog, True)
+            self.color_dialog.setOption(QColorDialog.NoButtons, True)
+        except Exception:
+            pass
+        if hasattr(self.color_dialog, "currentColorChanged"):
+            try:
+                self.color_dialog.currentColorChanged.connect(self._handle_color_changed)
+            except Exception:
+                pass
+        content.addWidget(self.color_dialog, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        for key in self._colors:
+            self._update_preview(key)
+
+        self._apply_current_color()
+
+    @staticmethod
+    def _normalise_hex(value: Optional[str], fallback: str) -> str:
+        if not isinstance(value, str):
+            return fallback.lower()
+        candidate = value.strip()
+        if not candidate:
+            return fallback.lower()
+        if not candidate.startswith("#"):
+            candidate = f"#{candidate}"
+        if len(candidate) == 4:
+            candidate = "#" + "".join(ch * 2 for ch in candidate[1:])
+        if len(candidate) != 7:
+            return fallback.lower()
+        try:
+            int(candidate[1:], 16)
+        except ValueError:
+            return fallback.lower()
+        return candidate.lower()
+
+    def _on_target_selected(self, key: str, checked: bool) -> None:
+        if not checked or key == self._current_target:
+            return
+        self._current_target = key
+        self._apply_current_color()
+
+    def _apply_current_color(self) -> None:
+        color = self._colors.get(self._current_target, "#000000")
+        if hasattr(self.color_dialog, "setCurrentColor"):
+            self._updating = True
+            try:
+                self.color_dialog.setCurrentColor(QColor(color))
+            except Exception:
+                pass
+            finally:
+                self._updating = False
+
+    def _handle_color_changed(self, color) -> None:  # pragma: no cover - Qt signal
+        if self._updating:
+            return
+        name = None
+        if hasattr(color, "name"):
+            try:
+                name = color.name()
+            except Exception:
+                name = None
+        if not name and isinstance(color, str):
+            name = color
+        normalised = self._normalise_hex(name, self._colors.get(self._current_target, "#000000"))
+        self._colors[self._current_target] = normalised
+        self._update_preview(self._current_target)
+
+    def _update_preview(self, key: str) -> None:
+        color = self._colors.get(key, "#000000")
+        swatch = self._swatches.get(key)
+        label = self._labels.get(key)
+        if swatch is not None:
+            swatch.setStyleSheet(
+                "QFrame {"
+                f"background-color: {color};"
+                "border: 1px solid rgba(0, 0, 0, 80);"
+                "border-radius: 4px;"
+                "}"
+            )
+        if label is not None:
+            label.setText(color.upper())
+
+    def accept(self) -> None:  # noqa: D401 - Qt override
+        """Persist the currently selected colours and close."""
+
+        self._result = {key: value for key, value in self._colors.items()}
+        super().accept()
+
+    def colors(self) -> Dict[str, str]:
+        """Return the colours selected by the user."""
+
+        return dict(self._result)
+
+
 class ChartWidget(QWidget):
     """Simple bar chart used on the dashboard."""
 
@@ -2764,6 +2937,7 @@ __all__ = [
     "IntervalEditor",
     "TargetsTable",
     "AddTargetDialog",
+    "ColorSettingsDialog",
     "SettingsDialog",
     "ChartWidget",
     "Dashboard",
