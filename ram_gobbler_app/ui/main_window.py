@@ -1049,8 +1049,7 @@ class MainWindow(QMainWindow):
             self._restore_scrollbar(bar, proc_scroll)
 
         self.proc_model.refresh(done)
-        self.targets_table.refresh()
-
+        
         if self.stack.currentWidget() == self.dashboard:
             self.dashboard.refresh(self.session_reclaimed_total)
 
