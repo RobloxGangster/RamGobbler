@@ -23,7 +23,8 @@ def _install_qt_fallback() -> None:
 
     global QT_AVAILABLE, Qt, QAbstractItemModel, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
     global QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject, Signal
-    global QIcon, QAction, QKeySequence, QPainter, QPen, QApplication, QMainWindow
+    global QVariantAnimation, QEasingCurve
+    global QIcon, QAction, QKeySequence, QPainter, QPen, QColor, QApplication, QMainWindow
     global QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLineEdit, QTableView, QTreeView
     global QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox, QFileDialog
     global QMessageBox, QAbstractItemView, QSplitter, QStyle, QTableWidget
@@ -103,6 +104,38 @@ def _install_qt_fallback() -> None:
             super().__init__(*args, **kwargs)
             self.timeout = _Signal()
 
+    class _DummyVariantAnimation(_DummyObject):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._start = 0.0
+            self._end = 0.0
+
+        def setDuration(self, *_):  # pragma: no cover - trivial fallback behaviour
+            return None
+
+        def setEasingCurve(self, *_):  # pragma: no cover - trivial fallback behaviour
+            return None
+
+        def setStartValue(self, value):  # pragma: no cover - trivial fallback behaviour
+            self._start = value
+
+        def setEndValue(self, value):  # pragma: no cover - trivial fallback behaviour
+            self._end = value
+
+        def stop(self):  # pragma: no cover - trivial fallback behaviour
+            return None
+
+        def start(self):  # pragma: no cover - trivial fallback behaviour
+            current = self._end
+            try:
+                current = float(current)
+            except Exception:
+                pass
+            try:
+                self.valueChanged.emit(current)  # type: ignore[attr-defined]
+            except Exception:
+                return None
+
     class _DummyRect(_DummyObject):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -165,11 +198,14 @@ def _install_qt_fallback() -> None:
     QRect = _DummyRect
     QEvent = type("QEvent", (_DummyObject,), {})
     Signal = _Signal
+    QVariantAnimation = _DummyVariantAnimation
+    QEasingCurve = types.SimpleNamespace(InOutCubic=0)
     QIcon = type("QIcon", (_DummyObject,), {})
     QAction = type("QAction", (_DummyObject,), {})
     QKeySequence = type("QKeySequence", (_DummyObject,), {})
     QPainter = type("QPainter", (_DummyObject,), {})
     QPen = type("QPen", (_DummyObject,), {})
+    QColor = type("QColor", (_DummyObject,), {})
     QApplication = _DummyApplication
     QMainWindow = type("QMainWindow", (_DummyObject,), {})
     QWidget = type("QWidget", (_DummyObject,), {})
@@ -221,8 +257,10 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QEvent,
             QObject,
             Signal,
+            QVariantAnimation,
+            QEasingCurve,
         )
-        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen
+        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen, QColor
         from PySide6.QtWidgets import (
             QApplication,
             QMainWindow,
@@ -376,6 +414,7 @@ __all__ = [
     "QKeySequence",
     "QPainter",
     "QPen",
+    "QColor",
     "QApplication",
     "QMainWindow",
     "QWidget",
