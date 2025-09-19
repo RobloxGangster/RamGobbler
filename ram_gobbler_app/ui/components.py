@@ -1074,6 +1074,79 @@ class IntervalEditor(QWidget):
                 pass
 
 
+class TargetStatsDialog(QDialog):
+    """Modal dialog presenting detailed statistics for a target."""
+
+    def __init__(self, target: Target, parent=None):
+        """Capture the target reference and build the stats layout."""
+
+        super().__init__(parent)
+        self.setWindowTitle("Target Stats")
+        self.setMinimumWidth(360)
+        self._target = target
+
+        layout = QVBoxLayout(self)
+
+        self.last_box = QGroupBox("Last Δ (MB)")
+        last_layout = QVBoxLayout(self.last_box)
+        self.lbl_last = QLabel()
+        if hasattr(self.lbl_last, "setAlignment") and hasattr(Qt, "AlignCenter"):
+            self.lbl_last.setAlignment(Qt.AlignCenter)
+        last_layout.addWidget(self.lbl_last)
+        layout.addWidget(self.last_box)
+
+        self.totals_box = QGroupBox("Totals MB (Sess/Day)")
+        totals_layout = QVBoxLayout(self.totals_box)
+        self.lbl_session_total = QLabel()
+        self.lbl_day_total = QLabel()
+        totals_layout.addWidget(self.lbl_session_total)
+        totals_layout.addWidget(self.lbl_day_total)
+        layout.addWidget(self.totals_box)
+
+        self.history_box = QGroupBox("History")
+        history_layout = QVBoxLayout(self.history_box)
+        self.sparkline = Sparkline(target.history, self.history_box)
+        history_layout.addWidget(self.sparkline)
+        self.lbl_history = QLabel()
+        if hasattr(self.lbl_history, "setWordWrap"):
+            self.lbl_history.setWordWrap(True)
+        history_layout.addWidget(self.lbl_history)
+        layout.addWidget(self.history_box)
+
+        self.button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+        self._timer = QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._refresh)
+        self._refresh()
+        self._timer.start()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt API
+        """Stop the refresh timer when the dialog is closed."""
+
+        if hasattr(self, "_timer") and self._timer.isActive():
+            self._timer.stop()
+        super().closeEvent(event)
+
+    def _refresh(self):
+        """Update all statistic fields from the current target state."""
+
+        target = self._target
+        self.lbl_last.setText(f"{target.last_delta_mb:.1f}")
+        self.lbl_session_total.setText(f"Session reclaimed: {target.session_reclaimed_mb:.1f} MB")
+        self.lbl_day_total.setText(f"Day reclaimed: {target.day_reclaimed_mb:.1f} MB")
+        history = target.history[-12:]
+        if history:
+            values = ", ".join(f"{val:.1f}" for val in history)
+            self.lbl_history.setText(values)
+        else:
+            self.lbl_history.setText("No history recorded yet.")
+        if isinstance(self.sparkline, Sparkline):
+            self.sparkline.set_values(target.history)
+
+
 class TargetsTable(QTableWidget):
     """Central table listing configured targets and their status."""
 
@@ -1083,9 +1156,6 @@ class TargetsTable(QTableWidget):
         "Match",
         "Auto-start",
         "Status",
-        "Last Δ (MB)",
-        "Totals MB (Sess/Day)",
-        "History",
         "Interval (s)",
     ]
 
@@ -1278,11 +1348,6 @@ class TargetsTable(QTableWidget):
         item.setFont(font)
         item.setFlags(Qt.ItemIsEnabled)
         self.setItem(row, 0, item)
-        total_item = QTableWidgetItem(f"{total:.1f}")
-        total_item.setFlags(Qt.ItemIsEnabled)
-        self.setItem(row, 6, total_item)
-        spark = Sparkline(history)
-        self.setCellWidget(row, 7, spark)
 
     def _add_row(self, idx: int, target: Target):
         """Insert a row representing ``target`` into the table."""
@@ -1310,11 +1375,6 @@ class TargetsTable(QTableWidget):
         autostart_cb.setChecked(target.autostart)
         autostart_cb.stateChanged.connect(lambda _=None, i=idx, cb=autostart_cb: self._on_autostart(i, cb.isChecked()))
 
-        last_delta_item = QTableWidgetItem(f"{target.last_delta_mb:.1f}")
-        totals_item = QTableWidgetItem(f"{target.session_reclaimed_mb:.1f} / {target.day_reclaimed_mb:.1f}")
-
-        spark = Sparkline(target.history)
-
         interval_widget = IntervalEditor(target.interval_sec, minimum=0.5, maximum=600.0, step=0.5)
         interval_widget.setToolTip("How often to gobble memory for this target")
         metrics = interval_widget.fontMetrics()
@@ -1335,10 +1395,7 @@ class TargetsTable(QTableWidget):
         self.setItem(row, 2, match_item)
         self.setCellWidget(row, 3, autostart_cb)
         self.setItem(row, 4, status_item)
-        self.setItem(row, 5, last_delta_item)
-        self.setItem(row, 6, totals_item)
-        self.setCellWidget(row, 7, spark)
-        self.setCellWidget(row, 8, interval_widget)
+        self.setCellWidget(row, 5, interval_widget)
 
         for widget in (
             group_widget,
@@ -1372,6 +1429,7 @@ class TargetsTable(QTableWidget):
         menu = QMenu(self)
         start_action = menu.addAction("Gobble RAM")
         stop_action = menu.addAction("Stop Gobbling")
+        stats_action = menu.addAction("Stats")
         edit_action = menu.addAction("Edit Rules…")
         remove_action = menu.addAction("Remove Target")
 
@@ -1388,6 +1446,8 @@ class TargetsTable(QTableWidget):
             self._on_start(config_index)
         elif chosen == stop_action and target is not None:
             self._on_stop(config_index)
+        elif chosen == stats_action and target is not None:
+            self._on_stats(config_index)
         elif chosen == edit_action:
             self._on_edit(config_index)
         elif chosen == remove_action:
@@ -1474,6 +1534,15 @@ class TargetsTable(QTableWidget):
         self.gobbler.set_active(index, False)
         self.refresh(force=True)
 
+    def _on_stats(self, index: int):
+        """Open the statistics dialog for the specified target."""
+
+        if not (0 <= index < len(self.config.targets)):
+            return
+        target = self.config.targets[index]
+        dialog = TargetStatsDialog(target, self)
+        dialog.exec()
+
     def _on_edit(self, index: int):
         """Open the rules dialog for ``index``."""
 
@@ -1533,15 +1602,6 @@ class TargetsTable(QTableWidget):
         if status_item:
             state = "Gobbling" if target.active else "Idle"
             status_item.setText(f"{state} — {message}")
-        delta_item = self.item(row, 5)
-        if delta_item:
-            delta_item.setText(f"{target.last_delta_mb:.1f}")
-        totals_item = self.item(row, 6)
-        if totals_item:
-            totals_item.setText(f"{target.session_reclaimed_mb:.1f} / {target.day_reclaimed_mb:.1f}")
-        spark = self.cellWidget(row, 7)
-        if isinstance(spark, Sparkline):
-            spark.set_values(target.history)
 
     def _flush_pending_refresh(self):
         """Execute a deferred refresh after the user stops interacting."""
