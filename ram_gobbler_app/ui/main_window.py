@@ -32,6 +32,7 @@ from ..platform import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPixmap,
     QSplitter,
     QStackedWidget,
     QStyle,
@@ -41,6 +42,7 @@ from ..platform import (
     QVBoxLayout,
     QWidget,
     QSize,
+    QSizePolicy,
     Qt,
     QAbstractItemView,
     QHeaderView,
@@ -68,6 +70,7 @@ from .components import (
     _InteractionWatcher,
     IntervalEditor,
 )
+from .logo_asset import get_rg_logo_png_bytes
 from metrics import Metrics
 
 
@@ -378,6 +381,43 @@ class MainWindow(QMainWindow):
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
+        tb.addSeparator()
+        spacer = QWidget()
+        if hasattr(spacer, "setSizePolicy"):
+            try:
+                spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            except Exception:
+                pass
+        tb.addWidget(spacer)
+
+        self.logo_label = QLabel()
+        self.logo_label.setObjectName("toolbarLogo")
+        if hasattr(self.logo_label, "setToolTip"):
+            try:
+                self.logo_label.setToolTip("RamGobbler")
+            except Exception:
+                pass
+        if QT_AVAILABLE:
+            alignment = 0
+            align_right = getattr(Qt, "AlignRight", None)
+            align_vcenter = getattr(Qt, "AlignVCenter", None)
+            if isinstance(align_right, int):
+                alignment |= align_right
+            if isinstance(align_vcenter, int):
+                alignment |= align_vcenter
+            if alignment:
+                try:
+                    self.logo_label.setAlignment(alignment)
+                except Exception:
+                    pass
+        if hasattr(self.logo_label, "setStyleSheet"):
+            try:
+                self.logo_label.setStyleSheet("padding: 2px; border-radius: 16px;")
+            except Exception:
+                pass
+        self._set_logo_pixmap()
+        tb.addWidget(self.logo_label)
+
 
         splitter = QSplitter()
         left = QWidget()
@@ -503,6 +543,67 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._apply_hotkey(self.config.hotkey))
 
         self._update_toolbar_scope()
+
+    def _set_logo_pixmap(self) -> None:
+        """Populate the toolbar logo label with the embedded RG artwork."""
+
+        label = getattr(self, "logo_label", None)
+        if label is None:
+            return
+
+        if not QT_AVAILABLE:
+            if hasattr(label, "setText"):
+                try:
+                    label.setText("RG")
+                except Exception:
+                    pass
+            return
+
+        try:
+            pixmap = QPixmap()
+        except Exception:
+            pixmap = None
+
+        data = get_rg_logo_png_bytes()
+        if not data or pixmap is None:
+            if hasattr(label, "setText"):
+                try:
+                    label.setText("RG")
+                except Exception:
+                    pass
+            return
+
+        loader = getattr(pixmap, "loadFromData", None)
+        if not callable(loader) or not loader(data):
+            if hasattr(label, "setText"):
+                try:
+                    label.setText("RG")
+                except Exception:
+                    pass
+            return
+
+        scaler = getattr(pixmap, "scaled", None)
+        if callable(scaler):
+            try:
+                keep = getattr(Qt, "KeepAspectRatio", 1)
+                transform = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
+                pixmap = scaler(44, 44, keep, transform)
+            except Exception:
+                pass
+
+        if hasattr(label, "setPixmap"):
+            try:
+                label.setPixmap(pixmap)
+                if hasattr(label, "setMinimumSize"):
+                    label.setMinimumSize(36, 36)
+                if hasattr(label, "setMaximumHeight"):
+                    label.setMaximumHeight(48)
+            except Exception:
+                if hasattr(label, "setText"):
+                    try:
+                        label.setText("RG")
+                    except Exception:
+                        pass
 
     def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
         """Ensure splitter handles cannot collapse panels entirely."""
