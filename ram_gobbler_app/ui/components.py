@@ -12,6 +12,7 @@ import ntpath
 import threading
 import time
 import uuid
+import weakref
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -1494,6 +1495,8 @@ class _IntervalStepButton(QPushButton):
     def __init__(self, symbol: str, parent=None, *, accessible_name: Optional[str] = None):
         super().__init__("", parent)
         self._symbol = symbol
+        self._glyph_active = "#000000"
+        self._glyph_disabled = "#6B6B6B"
         if accessible_name:
             setter = getattr(self, "setAccessibleName", None)
             if callable(setter):
@@ -1508,8 +1511,33 @@ class _IntervalStepButton(QPushButton):
                 except Exception:  # pragma: no cover - defensive
                     pass
 
+    def set_glyph_colors(
+        self,
+        *,
+        active: Optional[str] = None,
+        disabled: Optional[str] = None,
+    ) -> None:
+        """Update the glyph colours used for the active and disabled states."""
+
+        changed = False
+        if isinstance(active, str) and active.strip():
+            value = active.strip()
+            if value != self._glyph_active:
+                self._glyph_active = value
+                changed = True
+        if isinstance(disabled, str) and disabled.strip():
+            value = disabled.strip()
+            if value != self._glyph_disabled:
+                self._glyph_disabled = value
+                changed = True
+        if changed and hasattr(self, "update"):
+            try:
+                self.update()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
     def paintEvent(self, event):  # noqa: N802 - Qt API
-        """Paint the standard button then overlay the glyph in black."""
+        """Paint the standard button then overlay the glyph in the configured colour."""
 
         super().paintEvent(event)
         painter = QPainter(self)
@@ -1524,12 +1552,24 @@ class _IntervalStepButton(QPushButton):
 
             pen = QPen()
             set_color = getattr(pen, "setColor", None)
-            black = getattr(Qt, "black", None)
-            if callable(set_color) and black is not None:
+            color_value = self._glyph_disabled if not self.isEnabled() else self._glyph_active
+            if callable(set_color):
                 try:
-                    set_color(black)
+                    qcolor = QColor(color_value)
                 except Exception:  # pragma: no cover - defensive
-                    pass
+                    qcolor = None
+                if isinstance(qcolor, QColor) and qcolor.isValid():
+                    try:
+                        set_color(qcolor)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                else:
+                    fallback = getattr(Qt, "black", None)
+                    if fallback is not None:
+                        try:
+                            set_color(fallback)
+                        except Exception:  # pragma: no cover - defensive
+                            pass
             set_pen = getattr(painter, "setPen", None)
             if callable(set_pen):
                 try:
@@ -1607,6 +1647,16 @@ class IntervalEditor(QWidget):
 
     valueChanged = Signal(float)
     editingFinished = Signal()
+    _instances = weakref.WeakSet()
+    _default_palette = {
+        "base": "#AEBFF5",
+        "border": "#8C9FD9",
+        "hover": "#9DAFDC",
+        "pressed": "#8C9FD9",
+        "text": "#000000",
+        "disabled": "#D0DAF9",
+        "disabled_text": "#6B6B6B",
+    }
 
     def __init__(
         self,
@@ -1618,10 +1668,26 @@ class IntervalEditor(QWidget):
         step: float = 0.5,
     ):
         super().__init__(parent)
+        try:
+            type(self)._instances.add(self)
+        except Exception:  # pragma: no cover - defensive
+            pass
         self._min = float(minimum)
         self._max = float(maximum)
         self._step = float(step) if step > 0 else 0.5
         self._value = self._snap(self._clamp(value))
+        base_palette = getattr(type(self), "_default_palette", {}) or {}
+        self._button_palette = dict(base_palette)
+        if not self._button_palette:
+            self._button_palette = {
+                "base": "#AEBFF5",
+                "border": "#8C9FD9",
+                "hover": "#9DAFDC",
+                "pressed": "#8C9FD9",
+                "text": "#000000",
+                "disabled": "#D0DAF9",
+                "disabled_text": "#6B6B6B",
+            }
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1651,30 +1717,6 @@ class IntervalEditor(QWidget):
             self,
             accessible_name="Increase interval",
         )
-        button_stylesheet = (
-            """
-            QPushButton {
-                background-color: #AEBFF5;
-                border: 1px solid #8C9FD9;
-                border-radius: 4px;
-                font-size: 16px;
-                font-weight: bold;
-                color: #000000;
-            }
-            QPushButton:hover {
-                background-color: #9DAFDC;
-                color: #000000;
-            }
-            QPushButton:pressed {
-                background-color: #8C9FD9;
-                color: #000000;
-            }
-            QPushButton:disabled {
-                background-color: #D0DAF9;
-                color: #6B6B6B;
-            }
-            """
-        )
         for btn in (self.btn_down, self.btn_up):
             if hasattr(btn, "setAutoDefault"):
                 btn.setAutoDefault(False)
@@ -1696,8 +1738,6 @@ class IntervalEditor(QWidget):
                 else:
                     font.setPointSize(max(font.pointSize(), 12))
                 btn.setFont(font)
-            if hasattr(btn, "setStyleSheet"):
-                btn.setStyleSheet(button_stylesheet)
             btn_layout.addWidget(btn)
 
         layout.addLayout(btn_layout)
@@ -1709,7 +1749,37 @@ class IntervalEditor(QWidget):
         if hasattr(self.line_edit, "editingFinished"):
             self.line_edit.editingFinished.connect(self._on_edit_finished)
 
+        self._apply_button_styles()
         self._update_display()
+
+    @classmethod
+    def apply_theme_palette(cls, palette: Dict[str, str]) -> None:
+        """Update all instances to match the supplied theme palette."""
+
+        if not isinstance(palette, dict):
+            return
+        updates = {
+            "base": palette.get("accent") or cls._default_palette.get("base", "#AEBFF5"),
+            "border": palette.get("accent_border")
+            or cls._default_palette.get("border", "#8C9FD9"),
+            "hover": palette.get("accent_hover")
+            or cls._default_palette.get("hover", "#9DAFDC"),
+            "pressed": palette.get("accent_pressed")
+            or cls._default_palette.get("pressed", "#8C9FD9"),
+            "text": palette.get("accent_text") or cls._default_palette.get("text", "#000000"),
+            "disabled": palette.get("disabled_background")
+            or cls._default_palette.get("disabled", "#D0DAF9"),
+            "disabled_text": palette.get("disabled_text")
+            or cls._default_palette.get("disabled_text", "#6B6B6B"),
+        }
+        cls._default_palette.update(updates)
+        try:
+            instances = list(cls._instances)
+        except Exception:  # pragma: no cover - defensive
+            instances = []
+        for widget in instances:
+            if isinstance(widget, IntervalEditor):
+                widget.set_button_palette(**updates)
 
     def _clamp(self, value: float) -> float:
         return max(self._min, min(self._max, float(value)))
@@ -1835,6 +1905,86 @@ class IntervalEditor(QWidget):
                 self.editingFinished.emit()
             except Exception:  # pragma: no cover - defensive
                 pass
+
+    def set_button_palette(
+        self,
+        *,
+        base: Optional[str] = None,
+        border: Optional[str] = None,
+        hover: Optional[str] = None,
+        pressed: Optional[str] = None,
+        text: Optional[str] = None,
+        disabled: Optional[str] = None,
+        disabled_text: Optional[str] = None,
+    ) -> None:
+        """Apply per-instance overrides for the step button palette."""
+
+        palette = getattr(self, "_button_palette", {})
+        if not isinstance(palette, dict):
+            palette = {}
+            self._button_palette = palette
+        updates = {
+            "base": base,
+            "border": border,
+            "hover": hover,
+            "pressed": pressed,
+            "text": text,
+            "disabled": disabled,
+            "disabled_text": disabled_text,
+        }
+        changed = False
+        for key, value in updates.items():
+            if isinstance(value, str):
+                candidate = value.strip()
+                if candidate and candidate != palette.get(key):
+                    palette[key] = candidate
+                    changed = True
+        if changed:
+            self._apply_button_styles()
+
+    def _apply_button_styles(self) -> None:
+        """Sync the step buttons with the stored palette."""
+
+        palette = getattr(self, "_button_palette", {}) or {}
+        for key, fallback in IntervalEditor._default_palette.items():
+            palette.setdefault(key, fallback)
+        stylesheet = (
+            "QPushButton {"
+            f"background-color: {palette['base']};"
+            f"border: 1px solid {palette['border']};"
+            "border-radius: 4px;"
+            "font-size: 16px;"
+            "font-weight: bold;"
+            f"color: {palette['text']};"
+            "}"
+            "QPushButton:hover {"
+            f"background-color: {palette['hover']};"
+            f"color: {palette['text']};"
+            "}"
+            "QPushButton:pressed {"
+            f"background-color: {palette['pressed']};"
+            f"color: {palette['text']};"
+            "}"
+            "QPushButton:disabled {"
+            f"background-color: {palette['disabled']};"
+            f"color: {palette['disabled_text']};"
+            "}"
+        )
+        for btn in (getattr(self, "btn_down", None), getattr(self, "btn_up", None)):
+            if btn is None:
+                continue
+            setter = getattr(btn, "setStyleSheet", None)
+            if callable(setter):
+                try:
+                    setter(stylesheet)
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            glyph_setter = getattr(btn, "set_glyph_colors", None)
+            if callable(glyph_setter):
+                try:
+                    glyph_setter(active=palette.get("text"), disabled=palette.get("disabled_text"))
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
 
 class TargetStatsDialog(QDialog):
