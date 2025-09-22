@@ -5,6 +5,7 @@ import json
 import shutil
 import threading
 import time
+import webbrowser
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..constants import (
@@ -27,6 +28,8 @@ from ..platform import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QIcon,
+    QPixmap,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -38,6 +41,7 @@ from ..platform import (
     QSystemTrayIcon,
     QTreeView,
     QToolBar,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
     QSize,
@@ -47,6 +51,7 @@ from ..platform import (
     QTimer,
     QSortFilterProxyModel,
     QPushButton,
+    QWebEngineView,
     RegisterHotKey,
     UnregisterHotKey,
     HOTKEY_ID,
@@ -68,7 +73,67 @@ from .components import (
     _InteractionWatcher,
     IntervalEditor,
 )
+from .logo_asset import get_rg_logo_iframe_html, get_rg_logo_png_bytes
 from metrics import Metrics
+
+
+LOGO_LINK_URL = "https://hanime.tv/"
+
+
+def _load_logo_icon() -> Optional[QIcon]:
+    """Return the toolbar logo icon when Qt is available."""
+
+    if not QT_AVAILABLE:
+        return None
+    try:
+        data = get_rg_logo_png_bytes()
+    except Exception:
+        return None
+    if not data:
+        return None
+    try:
+        pixmap = QPixmap()
+        if hasattr(pixmap, "loadFromData") and pixmap.loadFromData(data, "PNG"):
+            return QIcon(pixmap)
+    except Exception:
+        return None
+    return None
+
+
+if QT_AVAILABLE and QWebEngineView is not None:
+
+    class _LogoWebView(QWebEngineView):
+        """Small helper view that intercepts clicks for the toolbar logo."""
+
+        def __init__(self, on_click, parent=None):
+            super().__init__(parent)
+            self._on_click = on_click
+            if hasattr(self, "setFocusPolicy") and hasattr(Qt, "NoFocus"):
+                try:
+                    self.setFocusPolicy(Qt.NoFocus)
+                except Exception:
+                    pass
+            if hasattr(self, "setContextMenuPolicy") and hasattr(Qt, "NoContextMenu"):
+                try:
+                    self.setContextMenuPolicy(Qt.NoContextMenu)
+                except Exception:
+                    pass
+
+        def mousePressEvent(self, event):  # type: ignore[override]
+            if callable(self._on_click):
+                try:
+                    self._on_click()
+                except Exception:
+                    pass
+            if event is not None:
+                try:
+                    event.accept()
+                except Exception:
+                    pass
+
+
+else:  # pragma: no cover - Qt-less environments use the fallback button
+    _LogoWebView = None
 
 
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
@@ -378,6 +443,94 @@ class MainWindow(QMainWindow):
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
+        logo_container = QWidget()
+        logo_layout = QHBoxLayout(logo_container)
+        try:
+            logo_layout.setContentsMargins(0, 0, 0, 0)
+            logo_layout.setSpacing(0)
+        except Exception:
+            pass
+        if QT_AVAILABLE and hasattr(logo_container, "setSizePolicy"):
+            try:
+                logo_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            except Exception:
+                pass
+        logo_layout.addStretch(1)
+
+        self.logo_iframe = None
+        self.logo_button = None
+        if QT_AVAILABLE and _LogoWebView is not None:
+            try:
+                iframe = _LogoWebView(self._open_logo_link)
+                html = get_rg_logo_iframe_html()
+                if not hasattr(iframe, "setHtml"):
+                    raise RuntimeError("WebEngine view missing setHtml")
+                iframe.setHtml(html)
+                if hasattr(iframe, "setAttribute") and hasattr(Qt, "WA_TranslucentBackground"):
+                    try:
+                        iframe.setAttribute(Qt.WA_TranslucentBackground, True)
+                    except Exception:
+                        pass
+                if hasattr(iframe, "setStyleSheet"):
+                    try:
+                        iframe.setStyleSheet("background: transparent; border: none;")
+                    except Exception:
+                        pass
+                if hasattr(iframe, "setMinimumSize"):
+                    try:
+                        iframe.setMinimumSize(148, 148)
+                    except Exception:
+                        pass
+                if hasattr(iframe, "setMaximumSize"):
+                    try:
+                        iframe.setMaximumSize(220, 220)
+                    except Exception:
+                        pass
+                self.logo_iframe = iframe
+            except Exception:
+                self.logo_iframe = None
+        if self.logo_iframe is not None:
+            logo_layout.addWidget(self.logo_iframe)
+        else:
+            self.logo_button = QPushButton()
+            try:
+                self.logo_button.setFlat(True)
+                if hasattr(self.logo_button, "setAutoFillBackground"):
+                    self.logo_button.setAutoFillBackground(False)
+                self.logo_button.setStyleSheet(
+                    "QPushButton { border: none; background: transparent; padding: 0; }"
+                    " QPushButton:hover { background: transparent; }"
+                    " QPushButton:pressed { background: transparent; }"
+                    " QPushButton:focus { outline: none; }"
+                )
+            except Exception:
+                pass
+            if hasattr(self.logo_button, "setToolTip"):
+                self.logo_button.setToolTip("Open hanime.tv")
+            if hasattr(self.logo_button, "setCursor") and hasattr(Qt, "PointingHandCursor"):
+                try:
+                    self.logo_button.setCursor(Qt.PointingHandCursor)
+                except Exception:
+                    pass
+            icon = _load_logo_icon()
+            if icon is not None:
+                try:
+                    self.logo_button.setIcon(icon)
+                    self.logo_button.setIconSize(QSize(128, 128))
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.logo_button.setText("RG")
+                except Exception:
+                    pass
+            try:
+                self.logo_button.clicked.connect(self._open_logo_link)
+            except Exception:
+                pass
+            logo_layout.addWidget(self.logo_button)
+        tb.addWidget(logo_container)
+
 
         splitter = QSplitter()
         left = QWidget()
@@ -667,6 +820,14 @@ class MainWindow(QMainWindow):
         label = "All Targets" if not self.current_group else self._group_name(self.current_group)
         try:
             self.act_group_selector.setText(f"Group: {label}")
+        except Exception:
+            pass
+
+    def _open_logo_link(self) -> None:
+        """Open the Hanime.tv website when the toolbar logo is clicked."""
+
+        try:
+            webbrowser.open(LOGO_LINK_URL, new=2)
         except Exception:
             pass
 
