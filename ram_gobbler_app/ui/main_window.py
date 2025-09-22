@@ -41,7 +41,6 @@ from ..platform import (
     QVBoxLayout,
     QWidget,
     QSize,
-    QSizePolicy,
     Qt,
     QAbstractItemView,
     QHeaderView,
@@ -52,7 +51,6 @@ from ..platform import (
     UnregisterHotKey,
     HOTKEY_ID,
     QColor,
-    QPixmap,
     QT_AVAILABLE,
 )
 from ..processes import ProcessNode, match_pids
@@ -70,7 +68,6 @@ from .components import (
     _InteractionWatcher,
     IntervalEditor,
 )
-from .logo_asset import get_rg_logo_png_bytes
 from metrics import Metrics
 
 
@@ -101,48 +98,6 @@ def _hex_from_rgb(r: int, g: int, b: int) -> str:
     """Convert RGB components into a ``#rrggbb`` string."""
 
     return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}{max(0, min(255, b)):02x}"
-
-
-def _png_bytes_have_alpha(data: bytes) -> bool:
-    """Return ``True`` when ``data`` encodes a PNG with transparency."""
-
-    if not data or len(data) < 33:
-        return False
-    signature = b"\x89PNG\r\n\x1a\n"
-    if not data.startswith(signature):
-        return False
-
-    offset = len(signature)
-    while offset + 8 <= len(data):
-        try:
-            length = int.from_bytes(data[offset : offset + 4], "big", signed=False)
-        except Exception:
-            return False
-        offset += 4
-        chunk_type = data[offset : offset + 4]
-        offset += 4
-        if length < 0:
-            return False
-        chunk_end = offset + length
-        if chunk_end > len(data):
-            return False
-        chunk_data = data[offset:chunk_end]
-        offset = chunk_end + 4  # skip CRC
-
-        if chunk_type == b"IHDR":
-            if length >= 10:
-                color_type = chunk_data[9]
-                if color_type in (4, 6):
-                    return True
-            else:
-                return False
-        elif chunk_type == b"tRNS" and length > 0:
-            return True
-
-        if chunk_type == b"IDAT":
-            break
-
-    return False
 
 
 def normalize_color(value: str, fallback: str) -> str:
@@ -420,168 +375,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         tb.addAction(self.act_group_selector)
-
-        spacer = QWidget()
-        set_size_policy = getattr(spacer, "setSizePolicy", None)
-        if callable(set_size_policy):
-            try:
-                set_size_policy(
-                    getattr(QSizePolicy, "Expanding", 0),
-                    getattr(QSizePolicy, "Preferred", 0),
-                )
-            except Exception:
-                pass
-        tb.addWidget(spacer)
-
-        self._toolbar_logo = QLabel("RG")
-        try:
-            self._toolbar_logo.setObjectName("toolbarLogo")
-        except Exception:
-            pass
-        set_attr = getattr(self._toolbar_logo, "setAttribute", None)
-        if callable(set_attr):
-            translucent = getattr(Qt, "WA_TranslucentBackground", None)
-            if translucent is not None:
-                try:
-                    set_attr(translucent, True)
-                except Exception:
-                    pass
-        align_right = getattr(Qt, "AlignRight", 0)
-        align_vcenter = getattr(Qt, "AlignVCenter", 0)
-        set_alignment = getattr(self._toolbar_logo, "setAlignment", None)
-        if callable(set_alignment):
-            try:
-                set_alignment(align_right | align_vcenter)
-            except Exception:
-                pass
-        set_tooltip = getattr(self._toolbar_logo, "setToolTip", None)
-        if callable(set_tooltip):
-            try:
-                set_tooltip("RamGobbler")
-            except Exception:
-                pass
-        set_stylesheet = getattr(self._toolbar_logo, "setStyleSheet", None)
-        if callable(set_stylesheet):
-            try:
-                set_stylesheet("background-color: transparent;")
-            except Exception:
-                pass
-
-        if QT_AVAILABLE and hasattr(QPixmap, "loadFromData"):
-            logo_has_alpha = False
-            try:
-                logo_bytes = get_rg_logo_png_bytes()
-                logo_has_alpha = _png_bytes_have_alpha(logo_bytes)
-            except Exception:
-                logo_bytes = b""
-            if logo_bytes:
-                try:
-                    pixmap = QPixmap()
-                    if pixmap.loadFromData(logo_bytes):
-                        target = 44
-                        aspect_mode = getattr(Qt, "KeepAspectRatio", 1)
-                        transform_mode = getattr(
-                            Qt,
-                            "SmoothTransformation",
-                            getattr(Qt, "FastTransformation", 1),
-                        )
-                        if hasattr(pixmap, "scaled"):
-                            pixmap = pixmap.scaled(
-                                target, target, aspect_mode, transform_mode
-                            )
-                        image = None
-                        background_color = None
-                        has_alpha = bool(logo_has_alpha)
-
-                        has_pixmap_alpha = getattr(pixmap, "hasAlphaChannel", None)
-                        if callable(has_pixmap_alpha):
-                            try:
-                                has_alpha = bool(has_pixmap_alpha()) or has_alpha
-                            except Exception:
-                                pass
-
-                        to_image = getattr(pixmap, "toImage", None)
-                        if callable(to_image):
-                            try:
-                                image = to_image()
-                            except Exception:
-                                image = None
-                            if image is not None and not has_alpha:
-                                image_has_alpha = getattr(
-                                    image, "hasAlphaChannel", None
-                                )
-                                if callable(image_has_alpha):
-                                    try:
-                                        has_alpha = bool(image_has_alpha()) or has_alpha
-                                    except Exception:
-                                        pass
-
-                        if not has_alpha and image is not None:
-                            try:
-                                pixel_color = getattr(image, "pixelColor", None)
-                                if callable(pixel_color):
-                                    color_obj = pixel_color(0, 0)
-                                    if hasattr(color_obj, "isValid"):
-                                        if color_obj.isValid():
-                                            background_color = color_obj
-                                    elif color_obj is not None:
-                                        background_color = color_obj
-                                elif hasattr(image, "pixel") and callable(
-                                    getattr(image, "pixel", None)
-                                ):
-                                    raw_pixel = image.pixel(0, 0)
-                                    if hasattr(QColor, "__call__"):
-                                        color_obj = QColor(raw_pixel)
-                                        background_color = color_obj
-                            except Exception:
-                                background_color = None
-
-                        if background_color is not None and not has_alpha:
-                            try:
-                                alpha_getter = getattr(background_color, "alpha", None)
-                                if callable(alpha_getter):
-                                    alpha_value = alpha_getter()
-                                    if isinstance(alpha_value, (int, float)) and alpha_value < 255:
-                                        has_alpha = True
-                                if not has_alpha:
-                                    alpha_f_getter = getattr(background_color, "alphaF", None)
-                                    if callable(alpha_f_getter):
-                                        alpha_f_value = alpha_f_getter()
-                                        if isinstance(alpha_f_value, (int, float)) and alpha_f_value < 1.0:
-                                            has_alpha = True
-                                elif isinstance(getattr(background_color, "alpha", None), int):
-                                    if getattr(background_color, "alpha") < 255:
-                                        has_alpha = True
-                            except Exception:
-                                pass
-
-                        if not has_alpha and background_color is not None:
-                            try:
-                                mask_mode = getattr(Qt, "MaskOutColor", None)
-                                create_mask = getattr(
-                                    pixmap, "createMaskFromColor", None
-                                )
-                                set_mask = getattr(pixmap, "setMask", None)
-                                if (
-                                    mask_mode is not None
-                                    and callable(create_mask)
-                                    and callable(set_mask)
-                                ):
-                                    mask = create_mask(background_color, mask_mode)
-                                    if mask is not None:
-                                        is_null = getattr(mask, "isNull", None)
-                                        if not callable(is_null) or not is_null():
-                                            set_mask(mask)
-                            except Exception:
-                                pass
-                        if hasattr(self._toolbar_logo, "setPixmap"):
-                            self._toolbar_logo.setPixmap(pixmap)
-                        if hasattr(self._toolbar_logo, "setText"):
-                            self._toolbar_logo.setText("")
-                except Exception:
-                    pass
-
-        tb.addWidget(self._toolbar_logo)
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
