@@ -350,28 +350,13 @@ class MainWindow(QMainWindow):
         self.act_stop_all.triggered.connect(self._stop_all)
         tb.addAction(self.act_stop_all)
 
-        self.act_gobble_visible = QAction("Gobble Visible Targets Now", self)
-        self.act_gobble_visible.triggered.connect(self._gobble_visible_targets)
-        tb.addAction(self.act_gobble_visible)
-
         self.act_view = QAction("Dashboard", self)
         self.act_view.triggered.connect(self._toggle_view)
         tb.addAction(self.act_view)
 
-        self.act_export = QAction("Export Settings…", self)
-        self.act_export.triggered.connect(self._export_settings)
-        tb.addAction(self.act_export)
-        self.act_import = QAction("Import Settings…", self)
-        self.act_import.triggered.connect(self._import_settings)
-        tb.addAction(self.act_import)
-
         self.act_settings = QAction("Settings…", self)
         self.act_settings.triggered.connect(self._open_settings)
         tb.addAction(self.act_settings)
-
-        self.act_group_settings = QAction("Group Settings…", self)
-        self.act_group_settings.triggered.connect(self._open_group_settings)
-        tb.addAction(self.act_group_settings)
 
         self.group_menu = QMenu("Select Group", self)
         try:
@@ -387,9 +372,6 @@ class MainWindow(QMainWindow):
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
-        self.act_color_settings = QAction("Color Settings", self)
-        self.act_color_settings.triggered.connect(self._open_color_settings)
-        tb.addAction(self.act_color_settings)
 
         splitter = QSplitter()
         left = QWidget()
@@ -759,11 +741,9 @@ class MainWindow(QMainWindow):
             name = self._group_name(self.current_group)
             self.act_gobble_all.setText(f"Gobble Group {name}")
             self.act_stop_all.setText(f"Stop Group {name}")
-            self.act_gobble_visible.setText(f"Gobble {name} Targets Now")
         else:
             self.act_gobble_all.setText("Gobble All Targets")
             self.act_stop_all.setText("Stop All")
-            self.act_gobble_visible.setText("Gobble Visible Targets Now")
 
     def _toggle_view(self):
         """Switch between the targets table and the metrics dashboard."""
@@ -1881,7 +1861,14 @@ class MainWindow(QMainWindow):
         prev_tray_mode = self.config.tray_mode
         prev_startup = self.config.startup_enabled
         prev_show_system = self.config.show_system
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(
+            self.config,
+            self,
+            on_open_color_settings=self._open_color_settings,
+            on_import_settings=self._import_settings,
+            on_export_settings=self._export_settings,
+            on_open_group_settings=self._open_group_settings,
+        )
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
             theme_changed = self.config.theme != prev_theme
