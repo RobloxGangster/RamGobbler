@@ -5,6 +5,7 @@ import json
 import shutil
 import threading
 import time
+import webbrowser
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..constants import (
@@ -27,6 +28,8 @@ from ..platform import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QIcon,
+    QPixmap,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -38,6 +41,7 @@ from ..platform import (
     QSystemTrayIcon,
     QTreeView,
     QToolBar,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
     QSize,
@@ -68,7 +72,31 @@ from .components import (
     _InteractionWatcher,
     IntervalEditor,
 )
+from .logo_asset import get_rg_logo_png_bytes
 from metrics import Metrics
+
+
+LOGO_LINK_URL = "https://hanime.tv/"
+
+
+def _load_logo_icon() -> Optional[QIcon]:
+    """Return the toolbar logo icon when Qt is available."""
+
+    if not QT_AVAILABLE:
+        return None
+    try:
+        data = get_rg_logo_png_bytes()
+    except Exception:
+        return None
+    if not data:
+        return None
+    try:
+        pixmap = QPixmap()
+        if hasattr(pixmap, "loadFromData") and pixmap.loadFromData(data, "PNG"):
+            return QIcon(pixmap)
+    except Exception:
+        return None
+    return None
 
 
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
@@ -378,6 +406,52 @@ class MainWindow(QMainWindow):
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
+        logo_container = QWidget()
+        logo_layout = QHBoxLayout(logo_container)
+        try:
+            logo_layout.setContentsMargins(0, 0, 0, 0)
+            logo_layout.setSpacing(0)
+        except Exception:
+            pass
+        if QT_AVAILABLE and hasattr(logo_container, "setSizePolicy"):
+            try:
+                logo_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            except Exception:
+                pass
+        logo_layout.addStretch(1)
+
+        self.logo_button = QPushButton()
+        try:
+            self.logo_button.setFlat(True)
+            self.logo_button.setStyleSheet("border: none; padding: 0;")
+        except Exception:
+            pass
+        if hasattr(self.logo_button, "setToolTip"):
+            self.logo_button.setToolTip("Open hanime.tv")
+        if hasattr(self.logo_button, "setCursor") and hasattr(Qt, "PointingHandCursor"):
+            try:
+                self.logo_button.setCursor(Qt.PointingHandCursor)
+            except Exception:
+                pass
+        icon = _load_logo_icon()
+        if icon is not None:
+            try:
+                self.logo_button.setIcon(icon)
+                self.logo_button.setIconSize(QSize(48, 48))
+            except Exception:
+                pass
+        else:
+            try:
+                self.logo_button.setText("RG")
+            except Exception:
+                pass
+        try:
+            self.logo_button.clicked.connect(self._open_logo_link)
+        except Exception:
+            pass
+        logo_layout.addWidget(self.logo_button)
+        tb.addWidget(logo_container)
+
 
         splitter = QSplitter()
         left = QWidget()
@@ -667,6 +741,14 @@ class MainWindow(QMainWindow):
         label = "All Targets" if not self.current_group else self._group_name(self.current_group)
         try:
             self.act_group_selector.setText(f"Group: {label}")
+        except Exception:
+            pass
+
+    def _open_logo_link(self) -> None:
+        """Open the Hanime.tv website when the toolbar logo is clicked."""
+
+        try:
+            webbrowser.open(LOGO_LINK_URL, new=2)
         except Exception:
             pass
 
