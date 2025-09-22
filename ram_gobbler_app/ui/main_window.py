@@ -41,7 +41,6 @@ from ..platform import (
     QVBoxLayout,
     QWidget,
     QSize,
-    QSizePolicy,
     Qt,
     QAbstractItemView,
     QHeaderView,
@@ -52,7 +51,6 @@ from ..platform import (
     UnregisterHotKey,
     HOTKEY_ID,
     QColor,
-    QPixmap,
     QT_AVAILABLE,
 )
 from ..processes import ProcessNode, match_pids
@@ -70,7 +68,6 @@ from .components import (
     _InteractionWatcher,
     IntervalEditor,
 )
-from .logo_asset import get_rg_logo_png_bytes
 from metrics import Metrics
 
 
@@ -378,58 +375,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         tb.addAction(self.act_group_selector)
-
-        spacer = QWidget()
-        set_size_policy = getattr(spacer, "setSizePolicy", None)
-        if callable(set_size_policy):
-            try:
-                set_size_policy(getattr(QSizePolicy, "Expanding", 0), getattr(QSizePolicy, "Preferred", 0))
-            except Exception:
-                pass
-        tb.addWidget(spacer)
-
-        self._toolbar_logo = QLabel("RG")
-        try:
-            self._toolbar_logo.setObjectName("toolbarLogo")
-        except Exception:
-            pass
-        align_right = getattr(Qt, "AlignRight", 0)
-        align_vcenter = getattr(Qt, "AlignVCenter", 0)
-        set_alignment = getattr(self._toolbar_logo, "setAlignment", None)
-        if callable(set_alignment):
-            try:
-                set_alignment(align_right | align_vcenter)
-            except Exception:
-                pass
-        set_tooltip = getattr(self._toolbar_logo, "setToolTip", None)
-        if callable(set_tooltip):
-            try:
-                set_tooltip("RamGobbler")
-            except Exception:
-                pass
-
-        if QT_AVAILABLE and hasattr(QPixmap, "loadFromData"):
-            try:
-                logo_bytes = get_rg_logo_png_bytes()
-            except Exception:
-                logo_bytes = b""
-            if logo_bytes:
-                try:
-                    pixmap = QPixmap()
-                    if pixmap.loadFromData(logo_bytes):
-                        target = 44
-                        aspect_mode = getattr(Qt, "KeepAspectRatio", 1)
-                        transform_mode = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 1))
-                        if hasattr(pixmap, "scaled"):
-                            pixmap = pixmap.scaled(target, target, aspect_mode, transform_mode)
-                        if hasattr(self._toolbar_logo, "setPixmap"):
-                            self._toolbar_logo.setPixmap(pixmap)
-                        if hasattr(self._toolbar_logo, "setText"):
-                            self._toolbar_logo.setText("")
-                except Exception:
-                    pass
-
-        tb.addWidget(self._toolbar_logo)
         self._rebuild_group_menu()
         self._update_group_selector_label()
 
@@ -887,15 +832,6 @@ class MainWindow(QMainWindow):
             }}
             QLabel {{
                 background: transparent;
-            }}
-            QLabel#toolbarLogo {{
-                background: transparent;
-                margin-left: 6px;
-                padding-left: 4px;
-                min-width: 52px;
-                max-width: 52px;
-                min-height: 44px;
-                max-height: 44px;
             }}
             QLineEdit, QSpinBox, QComboBox, QKeySequenceEdit {{
                 background: {palette['input_background']};
