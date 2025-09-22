@@ -2778,51 +2778,47 @@ class AddTargetDialog(QDialog):
 class SettingsDialog(QDialog):
     """Global application settings editor."""
 
-    def __init__(self, config: Config, parent=None):
+    def __init__(
+        self,
+        config: Config,
+        parent=None,
+        *,
+        on_open_color_settings: Optional[Callable[[], None]] = None,
+        on_import_settings: Optional[Callable[[], None]] = None,
+        on_export_settings: Optional[Callable[[], None]] = None,
+        on_open_group_settings: Optional[Callable[[], None]] = None,
+    ):
         """Build the settings form and seed it from ``config``."""
 
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(460)
         self.cfg = config
+        self._on_open_color_settings = on_open_color_settings
+        self._on_import_settings = on_import_settings
+        self._on_export_settings = on_export_settings
+        self._on_open_group_settings = on_open_group_settings
 
         form = QFormLayout(self)
         self.cmb_theme = QComboBox()
         self.cmb_theme.addItem("Dark", "dark")
         self.cmb_theme.addItem("Light", "light")
-        idx = self.cmb_theme.findData(config.theme)
-        if idx >= 0:
-            self.cmb_theme.setCurrentIndex(idx)
-        else:
-            fallback = self.cmb_theme.findData("dark")
-            if fallback >= 0:
-                self.cmb_theme.setCurrentIndex(fallback)
         self.kse = QKeySequenceEdit()
-        if config.hotkey:
-            self.kse.setKeySequence(config.hotkey)
         self.cb_wake = QCheckBox("Gobble on wake from sleep")
-        self.cb_wake.setChecked(bool(config.gobble_on_wake))
         self.cb_show_system = QCheckBox("Show system processes (⚠️)")
-        self.cb_show_system.setChecked(bool(config.show_system))
         self.cb_protect_system = QCheckBox("Protect system processes")
-        self.cb_protect_system.setChecked(bool(config.protect_system))
         self.cb_pressure = QCheckBox("Enable pressure-aware gobbling")
-        self.cb_pressure.setChecked(bool(config.pressure_enabled))
         self.cb_tray_mode = QCheckBox()
-        self.cb_tray_mode.setChecked(bool(config.tray_mode))
         self.cb_startup = QCheckBox()
-        self.cb_startup.setChecked(bool(config.startup_enabled))
         self.sb_min_free = QSpinBox()
         self.sb_min_free.setRange(5, 80)
-        self.sb_min_free.setValue(int(config.min_free_percent))
         self.cb_gaming = QCheckBox("Pause during fullscreen apps")
-        self.cb_gaming.setChecked(bool(config.gaming_mode))
         self.cmb_batt = QComboBox()
         self.cmb_batt.addItems(["off", "slow", "pause"])
-        self.cmb_batt.setCurrentText(config.battery_mode)
         self.sb_batt_factor = QSpinBox()
         self.sb_batt_factor.setRange(1, 4)
-        self.sb_batt_factor.setValue(int(config.battery_slow_factor))
+
+        self._load_from_config()
 
         form.addRow("Theme:", self.cmb_theme)
         form.addRow("Global hotkey:", self.kse)
@@ -2836,6 +2832,38 @@ class SettingsDialog(QDialog):
         form.addRow("Gaming mode:", self.cb_gaming)
         form.addRow("Battery mode:", self.cmb_batt)
         form.addRow("Battery slow factor:", self.sb_batt_factor)
+
+        actions = QWidget()
+        actions_layout = QVBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 12, 0, 12)
+        actions_layout.setSpacing(8)
+
+        self.btn_color_settings = QPushButton("👑 Color Settings")
+        self.btn_color_settings.setAutoDefault(False)
+        self.btn_color_settings.setDefault(False)
+        self.btn_color_settings.clicked.connect(self._handle_color_settings)
+        actions_layout.addWidget(self.btn_color_settings)
+
+        self.btn_group_settings = QPushButton("Group Settings…")
+        self.btn_group_settings.setAutoDefault(False)
+        self.btn_group_settings.setDefault(False)
+        self.btn_group_settings.clicked.connect(self._handle_group_settings)
+        actions_layout.addWidget(self.btn_group_settings)
+
+        self.btn_import_settings = QPushButton("Import Settings…")
+        self.btn_import_settings.setAutoDefault(False)
+        self.btn_import_settings.setDefault(False)
+        self.btn_import_settings.clicked.connect(self._handle_import_settings)
+        actions_layout.addWidget(self.btn_import_settings)
+
+        self.btn_export_settings = QPushButton("Export Settings…")
+        self.btn_export_settings.setAutoDefault(False)
+        self.btn_export_settings.setDefault(False)
+        self.btn_export_settings.clicked.connect(self._handle_export_settings)
+        actions_layout.addWidget(self.btn_export_settings)
+
+        actions_layout.addStretch(1)
+        form.addRow(actions)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -2859,6 +2887,56 @@ class SettingsDialog(QDialog):
         self.cfg.gaming_mode = bool(self.cb_gaming.isChecked())
         self.cfg.battery_mode = self.cmb_batt.currentText()
         self.cfg.battery_slow_factor = int(self.sb_batt_factor.value())
+
+    def _load_from_config(self) -> None:
+        """Populate widgets from the current configuration state."""
+
+        cfg = self.cfg
+        idx = self.cmb_theme.findData(cfg.theme)
+        if idx >= 0:
+            self.cmb_theme.setCurrentIndex(idx)
+        else:
+            fallback = self.cmb_theme.findData("dark")
+            if fallback >= 0:
+                self.cmb_theme.setCurrentIndex(fallback)
+        if cfg.hotkey:
+            self.kse.setKeySequence(cfg.hotkey)
+        else:
+            try:
+                self.kse.clear()
+            except Exception:
+                self.kse.setKeySequence("")
+        self.cb_wake.setChecked(bool(cfg.gobble_on_wake))
+        self.cb_show_system.setChecked(bool(cfg.show_system))
+        self.cb_protect_system.setChecked(bool(cfg.protect_system))
+        self.cb_pressure.setChecked(bool(cfg.pressure_enabled))
+        self.cb_tray_mode.setChecked(bool(cfg.tray_mode))
+        self.cb_startup.setChecked(bool(cfg.startup_enabled))
+        self.sb_min_free.setValue(int(cfg.min_free_percent))
+        self.cb_gaming.setChecked(bool(cfg.gaming_mode))
+        self.cmb_batt.setCurrentText(cfg.battery_mode)
+        self.sb_batt_factor.setValue(int(cfg.battery_slow_factor))
+
+    def _handle_color_settings(self) -> None:
+        self._trigger_callback(self._on_open_color_settings)
+
+    def _handle_group_settings(self) -> None:
+        if self._trigger_callback(self._on_open_group_settings):
+            self._load_from_config()
+
+    def _handle_import_settings(self) -> None:
+        if self._trigger_callback(self._on_import_settings):
+            self._load_from_config()
+
+    def _handle_export_settings(self) -> None:
+        self._trigger_callback(self._on_export_settings)
+
+    @staticmethod
+    def _trigger_callback(callback: Optional[Callable[[], None]]) -> bool:
+        if callable(callback):
+            callback()
+            return True
+        return False
 
 
 class ColorSettingsDialog(QDialog):
