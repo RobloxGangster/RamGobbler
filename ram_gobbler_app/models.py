@@ -18,6 +18,7 @@ from .constants import (
     LEGACY_PREFIX,
     LEGACY_REASON_KEY,
     LEGACY_WAKE_KEY,
+    MIN_INTERVAL,
 )
 from .startup import is_startup_enabled
 
@@ -65,6 +66,14 @@ class Target:
     _events: Deque[dict] = field(default_factory=lambda: deque(maxlen=200), repr=False)
     next_allowed_ts: float = field(default=0.0, repr=False)
 
+    def __post_init__(self) -> None:
+        """Normalise interval bounds eagerly so background workers stay safe."""
+
+        try:
+            self.interval_sec = max(MIN_INTERVAL, float(self.interval_sec))
+        except Exception:
+            self.interval_sec = float(DEFAULT_INTERVAL)
+
     def to_dict(self) -> dict:
         """Serialise the target for JSON persistence."""
 
@@ -83,7 +92,7 @@ class Target:
             match_by=raw.get("match_by", "name"),
             uid=raw.get("uid") or uuid.uuid4().hex[:10],
             active=bool(raw.get("active", False)),
-            interval_sec=float(raw.get("interval_sec", DEFAULT_INTERVAL)),
+            interval_sec=max(MIN_INTERVAL, float(raw.get("interval_sec", DEFAULT_INTERVAL))),
             last_gobble_ts=float(raw.get("last_gobble_ts", raw.get(LEGACY_LAST_TS_KEY, 0.0))),
             last_result=raw.get("last_result", ""),
             autostart=bool(raw.get("autostart", False)),

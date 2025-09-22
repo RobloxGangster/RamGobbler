@@ -7,6 +7,7 @@ from collections import deque
 from datetime import datetime
 from typing import Callable, Deque, Dict, List, Optional, Set, Tuple
 
+from .constants import MIN_INTERVAL
 from .deps import psutil
 from .helpers import (
     empty_working_set,
@@ -147,7 +148,7 @@ class Gobbler(threading.Thread):
                 # Jitter intervals per target so their timers do not fire in lock
                 # step, then slow them down when the machine is on battery.
                 base_interval = jittered_interval(target.interval_sec, target.key, self.config.jitter_pct)
-                eff_interval = max(0.5, base_interval * batt_factor)
+                eff_interval = max(MIN_INTERVAL, base_interval * batt_factor)
                 in_maintenance = window_active(self.config.maintenance_window, now_dt)
                 gobble_reason = "maintenance" if in_maintenance else "timer"
                 if in_maintenance and self.config.maintenance_window.get("aggressive"):
@@ -253,7 +254,7 @@ class Gobbler(threading.Thread):
 
         with self._lock:
             if 0 <= index < len(self.config.targets):
-                self.config.targets[index].interval_sec = max(0.5, float(seconds))
+                self.config.targets[index].interval_sec = max(MIN_INTERVAL, float(seconds))
                 self.config.save()
 
     def set_autostart(self, index: int, value: bool) -> None:
