@@ -7,8 +7,6 @@ import time
 from datetime import datetime
 from typing import Dict, Optional
 
-from ram_gobbler_app.constants import MIN_INTERVAL
-
 
 def _parse_hhmm(s: str) -> int:
     """Convert ``HH:MM`` strings to minutes since midnight.
@@ -100,13 +98,13 @@ def jittered_interval(interval: float, key: str, pct: int) -> float:
     """
 
     if pct <= 0 or interval <= 0:
-        # Nothing to jitter; clamp to the minimum supported interval.
-        return max(MIN_INTERVAL, float(interval))
+        # Nothing to jitter; clamp to a minimum of half a second.
+        return max(0.5, float(interval))
 
     # Calculate the maximum absolute jitter based on the percentage.
     rng = float(interval) * pct / 100.0
     if rng <= 0:
-        return max(MIN_INTERVAL, float(interval))
+        return max(0.5, float(interval))
 
     # Derive a deterministic offset from the provided key.
     h = int(hashlib.sha1(key.encode()).hexdigest(), 16)
@@ -114,7 +112,7 @@ def jittered_interval(interval: float, key: str, pct: int) -> float:
     offset = (span * 2.0 - 1.0) * rng
 
     # Ensure the final interval stays above the supported minimum.
-    return max(MIN_INTERVAL, float(interval) + offset)
+    return max(0.5, float(interval) + offset)
 
 
 def user_idle_seconds() -> int:

@@ -16,12 +16,9 @@ BACKUP_DIR = os.path.join(CONFIG_DIR, "backups")
 METRICS_PATH = os.path.join(CONFIG_DIR, "metrics.json")
 
 # Targets poll at this cadence unless overridden by the user.  Keeping the
-# defaults in a single place avoids magic numbers scattered throughout the UI
-# and background worker logic.
+# default in a single place avoids magic numbers scattered throughout the UI and
+# background worker logic.
 DEFAULT_INTERVAL = 15  # seconds
-# The UI now supports sub-second precision for aggressive targets; values are
-# clamped against this minimum in the worker and widgets.
-MIN_INTERVAL = 0.1  # seconds
 
 LEGACY_PREFIX = "t" + "rim"
 LEGACY_LAST_TS_KEY = f"last_{LEGACY_PREFIX}_ts"
@@ -37,7 +34,6 @@ __all__ = [
     "BACKUP_DIR",
     "METRICS_PATH",
     "DEFAULT_INTERVAL",
-    "MIN_INTERVAL",
     "LEGACY_PREFIX",
     "LEGACY_LAST_TS_KEY",
     "LEGACY_REASON_KEY",
