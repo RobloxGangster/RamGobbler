@@ -16,7 +16,7 @@ import weakref
 from datetime import datetime, timedelta
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
-from ..constants import DEFAULT_INTERVAL
+from ..constants import DEFAULT_INTERVAL, MIN_INTERVAL
 from ..helpers import empty_working_set, rss_mb
 from ..models import Config, Group, Target
 from ..processes import (
@@ -1716,9 +1716,9 @@ class IntervalEditor(QWidget):
         value: float,
         parent=None,
         *,
-        minimum: float = 0.5,
+        minimum: float = MIN_INTERVAL,
         maximum: float = 600.0,
-        step: float = 0.5,
+        step: float = 0.1,
     ):
         super().__init__(parent)
         try:
@@ -1727,7 +1727,7 @@ class IntervalEditor(QWidget):
             pass
         self._min = float(minimum)
         self._max = float(maximum)
-        self._step = float(step) if step > 0 else 0.5
+        self._step = float(step) if step > 0 else 0.1
         self._value = self._snap(self._clamp(value))
         base_palette = getattr(type(self), "_default_palette", {}) or {}
         self._button_palette = dict(base_palette)
@@ -1744,7 +1744,7 @@ class IntervalEditor(QWidget):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
         self.line_edit = QLineEdit(self)
         if hasattr(self, "setFocusProxy"):
@@ -1758,7 +1758,8 @@ class IntervalEditor(QWidget):
 
         btn_layout = QHBoxLayout()
         btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.setSpacing(6)
+        btn_layout.setSpacing(4)
+        self._button_layout = btn_layout
 
         self.btn_down = _IntervalStepButton(
             "-",
@@ -1780,9 +1781,9 @@ class IntervalEditor(QWidget):
             if hasattr(btn, "setFlat"):
                 btn.setFlat(True)
             if hasattr(btn, "setFixedWidth"):
-                btn.setFixedWidth(34)
+                btn.setFixedWidth(28)
             if hasattr(btn, "setFixedHeight"):
-                btn.setFixedHeight(28)
+                btn.setFixedHeight(26)
             if hasattr(btn, "setFont"):
                 font = btn.font()
                 font.setBold(True)
@@ -1870,7 +1871,7 @@ class IntervalEditor(QWidget):
                 font_metrics = None
         if font_metrics is not None:
             advance = getattr(font_metrics, "horizontalAdvance", None)
-            sample_text = "0000.00"
+            sample_text = "000.0"
             if callable(advance):
                 try:
                     sample = advance(sample_text)
@@ -1896,7 +1897,7 @@ class IntervalEditor(QWidget):
                     extra_padding += margins[0] + margins[2]
         if extra_padding <= 0:
             # Account for padding applied by the global stylesheet.
-            extra_padding = 24
+            extra_padding = 12
         style_getter = getattr(self.line_edit, "style", None)
         style = style_getter() if callable(style_getter) else None
         if style and hasattr(style, "pixelMetric") and hasattr(QStyle, "PM_DefaultFrameWidth"):
@@ -1910,11 +1911,47 @@ class IntervalEditor(QWidget):
             self.line_edit.setMinimumWidth(total_width)
         if hasattr(self.line_edit, "setMaximumWidth"):
             self.line_edit.setMaximumWidth(total_width)
-        extra = 80  # space for buttons and layout spacing
+        extra = 0
+        buttons: Iterable = getattr(self, "btn_down", None), getattr(self, "btn_up", None)
+        for btn in buttons:
+            if not btn:
+                continue
+            size_hint = getattr(btn, "sizeHint", None)
+            if callable(size_hint):
+                try:
+                    extra += size_hint().width()
+                    continue
+                except Exception:  # pragma: no cover - defensive
+                    pass
+            extra += 28
+        button_layout = getattr(self, "_button_layout", None)
+        if button_layout is not None:
+            spacing = getattr(button_layout, "spacing", None)
+            if callable(spacing):
+                try:
+                    extra += spacing()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+        main_layout = None
+        layout_getter = getattr(self, "layout", None)
+        if callable(layout_getter):
+            try:
+                main_layout = layout_getter()
+            except Exception:  # pragma: no cover - defensive
+                main_layout = None
+        if main_layout is not None:
+            spacing = getattr(main_layout, "spacing", None)
+            if callable(spacing):
+                try:
+                    extra += spacing()
+                except Exception:  # pragma: no cover - defensive
+                    pass
+        extra += 6  # breathing room so buttons do not crowd the line edit
+        widget_width = total_width + extra
         if hasattr(self, "setMinimumWidth"):
-            self.setMinimumWidth(total_width + extra)
+            self.setMinimumWidth(widget_width)
         if hasattr(self, "setMaximumWidth"):
-            self.setMaximumWidth(total_width + extra + 12)
+            self.setMaximumWidth(widget_width)
 
     def value(self) -> float:
         return self._value
@@ -2380,14 +2417,25 @@ class TargetsTable(QTableWidget):
         )
         self._register_toggle(autostart_cb)
 
-        interval_widget = IntervalEditor(target.interval_sec, minimum=0.5, maximum=600.0, step=0.5)
+        interval_widget = IntervalEditor(
+            target.interval_sec,
+            minimum=MIN_INTERVAL,
+            maximum=600.0,
+            step=0.1,
+        )
         interval_widget.setToolTip("How often to gobble memory for this target")
         metrics = interval_widget.fontMetrics()
         try:
-            digits_width = metrics.horizontalAdvance("0000.0")
+            sample_width = max(
+                metrics.horizontalAdvance("000.0"),
+                metrics.horizontalAdvance("600"),
+            )
         except AttributeError:  # pragma: no cover - Qt6 preferred API
-            digits_width = metrics.width("0000.0")  # type: ignore[attr-defined]
-        interval_widget.set_display_width(digits_width + 24)
+            sample_width = max(
+                metrics.width("000.0"),  # type: ignore[attr-defined]
+                metrics.width("600"),  # type: ignore[attr-defined]
+            )
+        interval_widget.set_display_width(sample_width)
         if hasattr(interval_widget, "setFocusPolicy") and hasattr(Qt, "StrongFocus"):
             interval_widget.setFocusPolicy(Qt.StrongFocus)
         interval_widget.valueChanged.connect(lambda val, i=idx: self._on_interval(i, val))
@@ -2701,7 +2749,12 @@ class AddTargetDialog(QDialog):
             self.cmb_group.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self._populate_groups(self._initial_group)
 
-        self.interval_editor = IntervalEditor(DEFAULT_INTERVAL, minimum=0.5, maximum=600.0, step=0.5)
+        self.interval_editor = IntervalEditor(
+            DEFAULT_INTERVAL,
+            minimum=MIN_INTERVAL,
+            maximum=600.0,
+            step=0.1,
+        )
         self.cb_autostart = QCheckBox("Auto-start gobbling for this target")
 
         self.sb_cpu = QSpinBox()
