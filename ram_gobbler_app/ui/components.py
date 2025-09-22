@@ -74,6 +74,7 @@ from ..platform import (
     QSize,
     Signal,
     QEasingCurve,
+    QT_AVAILABLE,
 )
 
 from groups import group_totals
@@ -3026,6 +3027,28 @@ class ColorSettingsDialog(QDialog):
         self._result: Dict[str, str] = {}
         self._updating_picker = False
         self._on_preview = on_preview
+        self._preview_interval_ms = 75
+        self._pending_preview: Optional[Dict[str, str]] = None
+        self._preview_timer = None
+        if QT_AVAILABLE:
+            try:
+                timer = QTimer(self)
+            except Exception:
+                timer = None
+            self._preview_timer = timer
+            if timer is not None:
+                try:
+                    timer.setSingleShot(True)
+                except Exception:
+                    pass
+                try:
+                    timer.setInterval(self._preview_interval_ms)
+                except Exception:
+                    pass
+                try:
+                    timer.timeout.connect(self._flush_preview)
+                except Exception:
+                    pass
 
         layout = QVBoxLayout(self)
         content = QHBoxLayout()
@@ -3258,8 +3281,36 @@ class ColorSettingsDialog(QDialog):
         callback = self._on_preview
         if not callable(callback):
             return
+        payload = {key: value for key, value in self._colors.items()}
+        timer = getattr(self, "_preview_timer", None)
+        if timer is None:
+            try:
+                callback(payload)
+            except Exception:
+                pass
+            return
+        self._pending_preview = payload
+        start = getattr(timer, "start", None)
+        if callable(start):
+            try:
+                start(self._preview_interval_ms)
+                return
+            except Exception:
+                pass
+        self._pending_preview = None
         try:
-            callback({key: value for key, value in self._colors.items()})
+            callback(payload)
+        except Exception:
+            pass
+
+    def _flush_preview(self) -> None:
+        payload = self._pending_preview
+        self._pending_preview = None
+        callback = self._on_preview
+        if not callable(callback) or not isinstance(payload, dict):
+            return
+        try:
+            callback(dict(payload))
         except Exception:
             pass
 
