@@ -7,7 +7,13 @@ import threading
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
-from ..constants import APP_NAME, CONFIG_PATH, METRICS_PATH, DEFAULT_INTERVAL
+from ..constants import (
+    APP_NAME,
+    CONFIG_PATH,
+    METRICS_PATH,
+    DEFAULT_INTERVAL,
+    MIN_INTERVAL,
+)
 from ..deps import psutil
 from ..gobbler import Gobbler
 from ..helpers import empty_working_set, rss_mb
@@ -1511,7 +1517,7 @@ class MainWindow(QMainWindow):
             return None
         value = task.get("interval")
         if isinstance(value, (int, float)):
-            return max(0.5, float(value))
+            return max(MIN_INTERVAL, float(value))
         return None
 
     def _prompt_process_interval(self, current: Optional[float] = None) -> Optional[float]:
@@ -1524,10 +1530,22 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         editor = IntervalEditor(
             current if current is not None else DEFAULT_INTERVAL,
-            minimum=0.5,
+            minimum=MIN_INTERVAL,
             maximum=600.0,
-            step=0.5,
+            step=0.1,
         )
+        metrics = editor.fontMetrics()
+        try:
+            sample_width = max(
+                metrics.horizontalAdvance("000.0"),
+                metrics.horizontalAdvance("600"),
+            )
+        except AttributeError:  # pragma: no cover - Qt6 preferred API
+            sample_width = max(
+                metrics.width("000.0"),  # type: ignore[attr-defined]
+                metrics.width("600"),  # type: ignore[attr-defined]
+            )
+        editor.set_display_width(sample_width)
         layout.addWidget(editor)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
         buttons.accepted.connect(dialog.accept)
@@ -1680,7 +1698,7 @@ class MainWindow(QMainWindow):
         key = tuple(sorted(pids))
         existing = self._process_gobble_tasks.get(key)
         if existing and interval is not None:
-            existing["interval"] = max(0.5, float(interval))
+            existing["interval"] = max(MIN_INTERVAL, float(interval))
             formatted = self._format_interval(interval)
             display_name = str(existing.get("display") or display)
             self.statusBar().showMessage(
@@ -1694,7 +1712,7 @@ class MainWindow(QMainWindow):
         stop_event = threading.Event()
         task: Dict[str, object] = {"event": stop_event, "display": display}
         if interval is not None:
-            task["interval"] = max(0.5, float(interval))
+            task["interval"] = max(MIN_INTERVAL, float(interval))
         self._process_gobble_tasks[key] = task
 
         def worker():
