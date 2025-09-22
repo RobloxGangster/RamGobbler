@@ -760,6 +760,11 @@ class MainWindow(QMainWindow):
         """Apply a stylesheet matching the chosen theme."""
 
         palette = build_palette(theme, self.config.theme_palette())
+        self._apply_palette(palette)
+
+    def _apply_palette(self, palette: Dict[str, str]):
+        """Apply ``palette`` to the main window and supporting widgets."""
+
         self._active_palette = palette
         IntervalEditor.apply_theme_palette(palette)
         targets_table = getattr(self, "targets_table", None)
@@ -953,6 +958,12 @@ class MainWindow(QMainWindow):
         for btn in (getattr(self, "btn_gobble_now", None), getattr(self, "btn_add_selected", None)):
             if btn is not None and hasattr(btn, "setStyleSheet"):
                 btn.setStyleSheet(flat_button_style)
+        for dialog in self.findChildren(GroupSettingsDialog):
+            if hasattr(dialog, "apply_palette"):
+                try:
+                    dialog.apply_palette(palette)
+                except Exception:
+                    continue
 
     def _init_tray(self):
         """Initialise the optional system-tray icon and context menu."""
@@ -1902,17 +1913,39 @@ class MainWindow(QMainWindow):
         """Allow users to tweak the active palette colours."""
 
         current = self.config.theme_palette_overrides()
-        dialog = ColorSettingsDialog(current, self, self.config.theme)
+        original_palette = getattr(self, "_active_palette", None)
+        if not isinstance(original_palette, dict):
+            original_palette = build_palette(self.config.theme, self.config.theme_palette())
+        else:
+            original_palette = dict(original_palette)
+
+        preview_applied = False
+
+        def handle_preview(updated: Dict[str, str]):
+            nonlocal preview_applied
+            preview_applied = True
+            palette = build_palette(self.config.theme, dict(updated))
+            self._apply_palette(palette)
+
+        dialog = ColorSettingsDialog(
+            current,
+            self,
+            self.config.theme,
+            on_preview=handle_preview,
+        )
         if dialog.exec() != QDialog.Accepted:
+            if preview_applied:
+                self._apply_palette(original_palette)
             return
 
-        chosen = dialog.colors()
-        if not chosen:
-            return
-
-        if chosen != current:
+        chosen = dialog.colors() or {}
+        changed = chosen != current
+        if changed:
             self.config.theme_colors = dict(chosen)
-            self._apply_styles(self.config.theme)
+
+        self._apply_styles(self.config.theme)
+
+        if changed:
             self.config.save()
             self.statusBar().showMessage("Color settings saved", 3000)
 

@@ -716,42 +716,79 @@ class GroupsSidebar(QWidget):
         self.btn_delete.setEnabled(has_group)
 
     def _apply_style(self):
-        """Apply the grey modal styling requested for the mock-up."""
+        """Apply styling that reflects the active theme palette."""
+
+        controller = self._controller
+        palette = getattr(controller, "_active_palette", None) if controller else None
+        self.apply_palette(palette)
+
+    def apply_palette(self, palette: Optional[Dict[str, str]]):
+        """Update the sidebar colours using ``palette`` when available."""
 
         theme = getattr(self.config, "theme", "dark")
         if theme == "light":
-            base_bg = "#f1f3f6"
-            list_bg = "#ffffff"
-            border = "#cdd3de"
-            button_bg = "#dfe3eb"
-            button_hover = "#d2d7e1"
-            button_press = "#c4cad6"
-            button_fg = "#1a1c20"
+            defaults = {
+                "background": "#f1f3f6",
+                "surface": "#ffffff",
+                "border": "#cdd3de",
+                "accent": "#dfe3eb",
+                "accent_hover": "#d2d7e1",
+                "accent_pressed": "#c4cad6",
+                "accent_text": "#1a1c20",
+                "text": "#1a1c20",
+            }
         else:
-            base_bg = "#1b1f29"
-            list_bg = "#11141a"
-            border = "#2a2f3a"
-            button_bg = "#2b3a55"
-            button_hover = "#33476a"
-            button_press = "#25364f"
-            button_fg = "#eaeef8"
+            defaults = {
+                "background": "#1b1f29",
+                "surface": "#11141a",
+                "border": "#2a2f3a",
+                "accent": "#2b3a55",
+                "accent_hover": "#33476a",
+                "accent_pressed": "#25364f",
+                "accent_text": "#eaeef8",
+                "text": "#eaeef8",
+            }
+
+        def pick(key: str) -> str:
+            if isinstance(palette, dict):
+                value = palette.get(key)
+                if isinstance(value, str) and value:
+                    return value
+            return defaults.get(key, "#000000")
+
+        base_bg = pick("background")
+        list_bg = pick("surface")
+        border = pick("border")
+        button_bg = pick("accent")
+        button_hover = pick("accent_hover")
+        button_press = pick("accent_pressed")
+        button_fg = pick("accent_text")
+        text_color = pick("text")
+        if isinstance(palette, dict):
+            raw_border = palette.get("accent_border") or palette.get("border")
+            button_border = raw_border if isinstance(raw_border, str) and raw_border else border
+        else:
+            button_border = border
 
         self.setStyleSheet(
             """
             QWidget#groupSettingsPanel {
                 background-color: %s;
                 border-radius: 14px;
+                color: %s;
             }
             QListWidget#groupSettingsList {
                 background-color: %s;
                 border: 1px solid %s;
                 border-radius: 10px;
                 padding: 6px;
+                color: %s;
             }
             QWidget#groupSettingsButtons {
                 background-color: %s;
                 border-top: 1px solid %s;
                 padding: 12px 0;
+                color: %s;
             }
             QWidget#groupSettingsButtons QPushButton {
                 background-color: %s;
@@ -769,13 +806,16 @@ class GroupsSidebar(QWidget):
             """
             % (
                 base_bg,
+                text_color,
                 list_bg,
                 border,
+                text_color,
                 base_bg,
                 border,
+                text_color,
                 button_bg,
                 button_fg,
-                border,
+                button_border,
                 button_hover,
                 button_press,
             )
@@ -836,6 +876,18 @@ class GroupSettingsDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        self.apply_palette(getattr(main_window, "_active_palette", None))
+
+    def apply_palette(self, palette: Optional[Dict[str, str]]):
+        """Propagate palette updates to the embedded sidebar."""
+
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is not None and hasattr(sidebar, "apply_palette"):
+            try:
+                sidebar.apply_palette(palette)
+            except Exception:
+                pass
 
 
 class RulesDialog(QDialog):
@@ -2948,7 +3000,14 @@ class ColorSettingsDialog(QDialog):
         ("button", "Buttons"),
     ]
 
-    def __init__(self, colors: Dict[str, str], parent=None, theme: Optional[str] = None):
+    def __init__(
+        self,
+        colors: Dict[str, str],
+        parent=None,
+        theme: Optional[str] = None,
+        *,
+        on_preview: Optional[Callable[[Dict[str, str]], None]] = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Color Settings")
         self.setModal(True)
@@ -2966,6 +3025,7 @@ class ColorSettingsDialog(QDialog):
         self._current_target = "text"
         self._result: Dict[str, str] = {}
         self._updating_picker = False
+        self._on_preview = on_preview
 
         layout = QVBoxLayout(self)
         content = QHBoxLayout()
@@ -3175,6 +3235,7 @@ class ColorSettingsDialog(QDialog):
             return
         self._colors[key] = normalised
         self._update_preview(key)
+        self._emit_preview()
         self._highlight_selection()
 
     def _update_preview(self, key: str) -> None:
@@ -3192,6 +3253,15 @@ class ColorSettingsDialog(QDialog):
             )
         if label is not None:
             label.setText(color.upper())
+
+    def _emit_preview(self) -> None:
+        callback = self._on_preview
+        if not callable(callback):
+            return
+        try:
+            callback({key: value for key, value in self._colors.items()})
+        except Exception:
+            pass
 
     def accept(self) -> None:  # noqa: D401 - Qt override
         """Persist the currently selected colours and close."""
