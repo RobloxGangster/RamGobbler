@@ -24,14 +24,13 @@ def _install_qt_fallback() -> None:
     global QT_AVAILABLE, Qt, QAbstractItemModel, QAbstractTableModel, QModelIndex, QSortFilterProxyModel
     global QTimer, QSize, QAbstractNativeEventFilter, QRect, QEvent, QObject, Signal
     global QVariantAnimation, QEasingCurve
-    global QIcon, QPixmap, QAction, QKeySequence, QPainter, QPen, QColor, QApplication, QMainWindow
+    global QIcon, QAction, QKeySequence, QPainter, QPen, QColor, QApplication, QMainWindow
     global QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLineEdit, QTableView, QTreeView
     global QPushButton, QLabel, QHeaderView, QToolBar, QSpinBox, QFileDialog
     global QMessageBox, QAbstractItemView, QSplitter, QStyle, QTableWidget
     global QTableWidgetItem, QCheckBox, QMenu, QDialog, QFormLayout
     global QDialogButtonBox, QSystemTrayIcon, QKeySequenceEdit, QComboBox
     global QListWidget, QInputDialog, QStackedWidget, QColorDialog, QButtonGroup, QRadioButton, QFrame
-    global QSizePolicy
 
     QT_AVAILABLE = False
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -202,7 +201,6 @@ def _install_qt_fallback() -> None:
     QVariantAnimation = _DummyVariantAnimation
     QEasingCurve = types.SimpleNamespace(InOutCubic=0)
     QIcon = type("QIcon", (_DummyObject,), {})
-    QPixmap = type("QPixmap", (_DummyObject,), {})
     QAction = type("QAction", (_DummyObject,), {})
     QKeySequence = type("QKeySequence", (_DummyObject,), {})
     QPainter = type("QPainter", (_DummyObject,), {})
@@ -243,7 +241,6 @@ def _install_qt_fallback() -> None:
     QButtonGroup = type("QButtonGroup", (_DummyObject,), {})
     QRadioButton = type("QRadioButton", (_DummyObject,), {})
     QFrame = type("QFrame", (_DummyObject,), {})
-    QSizePolicy = types.SimpleNamespace(Expanding=0, Preferred=0)
     QColorDialog = type(
         "QColorDialog",
         (_DummyObject,),
@@ -271,7 +268,7 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QVariantAnimation,
             QEasingCurve,
         )
-        from PySide6.QtGui import QIcon, QPixmap, QAction, QKeySequence, QPainter, QPen, QColor
+        from PySide6.QtGui import QIcon, QAction, QKeySequence, QPainter, QPen, QColor
         from PySide6.QtWidgets import (
             QApplication,
             QMainWindow,
@@ -309,7 +306,6 @@ if os.name == "nt":  # pragma: no cover - Qt bindings not available in tests
             QButtonGroup,
             QRadioButton,
             QFrame,
-            QSizePolicy,
         )
     except Exception:  # pragma: no cover - allows tests without Qt
         _install_qt_fallback()
@@ -426,7 +422,6 @@ __all__ = [
     "QObject",
     "Signal",
     "QIcon",
-    "QPixmap",
     "QAction",
     "QKeySequence",
     "QPainter",
