@@ -410,20 +410,7 @@ class MainWindow(QMainWindow):
                     self.logo_label.setAlignment(alignment)
                 except Exception:
                     pass
-        if hasattr(self.logo_label, "setStyleSheet"):
-            try:
-                self.logo_label.setStyleSheet(
-                    "padding: 2px; border-radius: 16px; background-color: transparent;"
-                )
-            except Exception:
-                pass
-        if QT_AVAILABLE and hasattr(self.logo_label, "setAttribute"):
-            translucent = getattr(Qt, "WA_TranslucentBackground", None)
-            if isinstance(translucent, int):
-                try:
-                    self.logo_label.setAttribute(translucent)
-                except Exception:
-                    pass
+        self._configure_logo_label()
         self._set_logo_pixmap()
         tb.addWidget(self.logo_label)
 
@@ -560,6 +547,8 @@ class MainWindow(QMainWindow):
         if label is None:
             return
 
+        self._configure_logo_label()
+
         if not QT_AVAILABLE:
             if hasattr(label, "setText"):
                 try:
@@ -613,6 +602,32 @@ class MainWindow(QMainWindow):
                         label.setText("RG")
                     except Exception:
                         pass
+
+    def _configure_logo_label(self) -> None:
+        """Apply consistent styling and transparency to the logo label."""
+
+        label = getattr(self, "logo_label", None)
+        if label is None:
+            return
+
+        stylesheet_bits = ["padding: 2px", "border-radius: 16px"]
+        if QT_AVAILABLE:
+            stylesheet_bits.append("background-color: transparent")
+        stylesheet = "; ".join(stylesheet_bits) + ";"
+
+        if hasattr(label, "setStyleSheet"):
+            try:
+                label.setStyleSheet(stylesheet)
+            except Exception:
+                pass
+
+        if QT_AVAILABLE and hasattr(label, "setAttribute"):
+            translucent = getattr(Qt, "WA_TranslucentBackground", None)
+            if isinstance(translucent, int):
+                try:
+                    label.setAttribute(translucent)
+                except Exception:
+                    pass
 
     def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
         """Ensure splitter handles cannot collapse panels entirely."""
