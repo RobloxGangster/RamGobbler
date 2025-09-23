@@ -81,8 +81,7 @@ _TOOLBAR_LOGO_BORDER_RADIUS = _TOOLBAR_HEIGHT // 2
 # Values are ``(left, top, right, bottom)`` with the right/bottom edges being
 # exclusive to match ``QPixmap.copy`` semantics.  Cropping to this window removes
 # the generous transparent matting around the artwork so the logo can render
-# larger without altering the toolbar height.
-_TOOLBAR_LOGO_CONTENT_BOUNDS = (200, 89, 824, 763)
+
 
 
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
@@ -612,6 +611,7 @@ class MainWindow(QMainWindow):
             bottom = max(top, min(int(bottom), height))
             crop_width = max(0, right - left)
             crop_height = max(0, bottom - top)
+            
             if crop_width and crop_height:
                 try:
                     pixmap = pixmap.copy(left, top, crop_width, crop_height)
