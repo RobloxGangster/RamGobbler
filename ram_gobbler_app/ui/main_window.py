@@ -617,21 +617,65 @@ class MainWindow(QMainWindow):
             if crop_width and crop_height:
                 try:
                     pixmap = pixmap.copy(left, top, crop_width, crop_height)
+                    width = crop_width
+                    height = crop_height
                 except Exception:
                     pass
+
+        if width and height and width != height and hasattr(pixmap, "copy"):
+            if width > height:
+                delta = max(0, width - height)
+                crop_left = max(0, delta // 2)
+                crop_width = max(1, width - delta)
+                try:
+                    pixmap = pixmap.copy(crop_left, 0, crop_width, height)
+                    width = crop_width
+                except Exception:
+                    pass
+            else:
+                delta = max(0, height - width)
+                crop_top = max(0, delta // 2)
+                crop_height = max(1, height - delta)
+                try:
+                    pixmap = pixmap.copy(0, crop_top, width, crop_height)
+                    height = crop_height
+                except Exception:
+                    pass
+
+        if hasattr(pixmap, "width") and hasattr(pixmap, "height"):
+            try:
+                width = int(pixmap.width())
+                height = int(pixmap.height())
+            except Exception:
+                width = height = 0
 
         scaler = getattr(pixmap, "scaled", None)
         if callable(scaler):
             try:
                 keep = getattr(Qt, "KeepAspectRatio", 1)
+                expand = getattr(Qt, "KeepAspectRatioByExpanding", keep)
                 transform = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
                 target = max(1, _TOOLBAR_HEIGHT - 2 * _TOOLBAR_LOGO_PADDING)
-                pixmap = scaler(
-                    target,
-                    target,
-                    keep,
-                    transform,
-                )
+                pixmap = scaler(target, target, expand, transform)
+
+                if expand != keep and hasattr(pixmap, "width") and hasattr(pixmap, "height"):
+                    try:
+                        width = int(pixmap.width())
+                        height = int(pixmap.height())
+                    except Exception:
+                        width = height = 0
+
+                    if width and height and hasattr(pixmap, "copy"):
+                        crop_x = max(0, (width - target) // 2)
+                        crop_y = max(0, (height - target) // 2)
+                        crop_w = max(1, min(target, width - crop_x))
+                        crop_h = max(1, min(target, height - crop_y))
+
+                        if crop_w != width or crop_h != height:
+                            try:
+                                pixmap = pixmap.copy(crop_x, crop_y, crop_w, crop_h)
+                            except Exception:
+                                pass
             except Exception:
                 pass
 
