@@ -74,11 +74,6 @@ from .logo_asset import get_rg_logo_png_bytes
 from metrics import Metrics
 
 
-_TOOLBAR_LOGO_DIMENSION = 96
-_TOOLBAR_LOGO_BORDER_RADIUS = _TOOLBAR_LOGO_DIMENSION // 2
-_TOOLBAR_LOGO_MAX_HEIGHT = _TOOLBAR_LOGO_DIMENSION + 12
-
-
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
     """Return normalised ``#rrggbb`` string and RGB tuple."""
 
@@ -417,9 +412,7 @@ class MainWindow(QMainWindow):
                     pass
         if hasattr(self.logo_label, "setStyleSheet"):
             try:
-                self.logo_label.setStyleSheet(
-                    f"padding: 2px; border-radius: {_TOOLBAR_LOGO_BORDER_RADIUS}px;"
-                )
+                self.logo_label.setStyleSheet("padding: 2px; border-radius: 16px;")
             except Exception:
                 pass
         self._set_logo_pixmap()
@@ -594,12 +587,7 @@ class MainWindow(QMainWindow):
             try:
                 keep = getattr(Qt, "KeepAspectRatio", 1)
                 transform = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
-                pixmap = scaler(
-                    _TOOLBAR_LOGO_DIMENSION,
-                    _TOOLBAR_LOGO_DIMENSION,
-                    keep,
-                    transform,
-                )
+                pixmap = scaler(44, 44, keep, transform)
             except Exception:
                 pass
 
@@ -607,11 +595,9 @@ class MainWindow(QMainWindow):
             try:
                 label.setPixmap(pixmap)
                 if hasattr(label, "setMinimumSize"):
-                    label.setMinimumSize(
-                        _TOOLBAR_LOGO_DIMENSION, _TOOLBAR_LOGO_DIMENSION
-                    )
+                    label.setMinimumSize(36, 36)
                 if hasattr(label, "setMaximumHeight"):
-                    label.setMaximumHeight(_TOOLBAR_LOGO_MAX_HEIGHT)
+                    label.setMaximumHeight(48)
             except Exception:
                 if hasattr(label, "setText"):
                     try:
