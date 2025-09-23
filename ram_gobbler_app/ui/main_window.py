@@ -393,11 +393,14 @@ class MainWindow(QMainWindow):
         right = QWidget()
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setSizes([650, 560])
+        default_splitter_sizes = [650, 560]
+        splitter.setSizes(default_splitter_sizes)
         splitter.setChildrenCollapsible(False)
         for idx in range(splitter.count()):
             splitter.setCollapsible(idx, False)
-        splitter.splitterMoved.connect(self._prevent_splitter_collapse)
+        self._locked_splitter_sizes = list(default_splitter_sizes)
+        self._disable_splitter_handles(splitter)
+        splitter.splitterMoved.connect(self._lock_splitter_position)
         self.splitter = splitter
 
         lv = QVBoxLayout(left)
@@ -513,57 +516,78 @@ class MainWindow(QMainWindow):
 
         self._update_toolbar_scope()
 
-    def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
-        """Ensure splitter handles cannot collapse panels entirely."""
+    def _disable_splitter_handles(self, splitter: QSplitter) -> None:
+        """Prevent the splitter handle from being interactive or visible."""
 
-        splitter = getattr(self, "splitter", None)
-        if splitter is None:
-            return
-
-        sizes = splitter.sizes()
-        if not sizes:
-            return
-
-        total = sum(sizes)
-        handle_width = splitter.handleWidth()
-        if splitter.orientation() == Qt.Horizontal:
-            available = splitter.width()
-        else:
-            available = splitter.height()
-        max_pos = max(0, available - handle_width)
-        edge_slop = min(max(1, handle_width // 2), max_pos)
-
-        if len(sizes) == 2 and total > 0:
-            if pos <= edge_slop:
-                self._set_splitter_sizes([0, total])
-                return
-            if pos >= max_pos - edge_slop:
-                self._set_splitter_sizes([total, 0])
-                return
-
-        min_size = 1
-        if all(size >= min_size for size in sizes):
-            return
-
-        self._set_splitter_sizes([max(size, min_size) for size in sizes])
-
-    def _set_splitter_sizes(self, sizes: List[int]) -> None:
-        """Update splitter sizes while temporarily allowing collapse."""
-
-        splitter = getattr(self, "splitter", None)
-        if splitter is None:
-            return
-
-        splitter.blockSignals(True)
+        handle_width = 12
         try:
-            collapsible_states = [splitter.isCollapsible(idx) for idx in range(splitter.count())]
-            for idx in range(splitter.count()):
-                splitter.setCollapsible(idx, True)
-            splitter.setSizes(sizes)
+            handle_width = max(handle_width, splitter.handleWidth())
+            splitter.setHandleWidth(handle_width)
+        except Exception:
+            pass
+
+        attr = getattr(Qt, "WA_TransparentForMouseEvents", None)
+        count = 0
+        try:
+            count = splitter.count()
+        except Exception:
+            count = 0
+
+        for idx in range(1, count):
+            try:
+                handle = splitter.handle(idx)
+            except Exception:
+                handle = None
+            if handle is None:
+                continue
+            if attr is not None and hasattr(handle, "setAttribute"):
+                try:
+                    handle.setAttribute(attr, True)
+                except Exception:
+                    pass
+            if hasattr(handle, "setEnabled"):
+                try:
+                    handle.setEnabled(False)
+                except Exception:
+                    pass
+            if hasattr(handle, "setCursor") and hasattr(Qt, "ArrowCursor"):
+                try:
+                    handle.setCursor(Qt.ArrowCursor)
+                except Exception:
+                    pass
+            if hasattr(handle, "setFocusPolicy") and hasattr(Qt, "NoFocus"):
+                try:
+                    handle.setFocusPolicy(Qt.NoFocus)
+                except Exception:
+                    pass
+
+    def _lock_splitter_position(self, _pos: int, _index: int) -> None:
+        """Keep the splitter locked to the initial size ratio."""
+
+        splitter = getattr(self, "splitter", None)
+        locked = getattr(self, "_locked_splitter_sizes", None)
+        if splitter is None or not locked:
+            return
+
+        try:
+            current = splitter.sizes()
+        except Exception:
+            return
+
+        if not current or len(current) != len(locked) or current == locked:
+            return
+
+        try:
+            splitter.blockSignals(True)
+        except Exception:
+            pass
+        try:
+            splitter.setSizes(locked)
         finally:
-            for idx, was_collapsible in enumerate(collapsible_states):
-                splitter.setCollapsible(idx, was_collapsible)
-            splitter.blockSignals(False)
+            try:
+                splitter.blockSignals(False)
+            except Exception:
+                pass
 
     def _preview_theme_selection(self, theme: str) -> None:
         """Preview ``theme`` without mutating the configuration."""
@@ -952,11 +976,12 @@ class MainWindow(QMainWindow):
                 background: {palette['menu_item_hover']};
             }}
             QSplitter::handle {{
-                background: {palette['splitter_handle']};
+                background: transparent;
+                border: none;
                 margin: 0 6px;
             }}
             QSplitter::handle:pressed {{
-                background: {palette['splitter_pressed']};
+                background: transparent;
             }}
         """
         self.setStyleSheet(stylesheet)
