@@ -206,7 +206,7 @@ def _qt_alignment_candidates(*names: str) -> List[Any]:
     numeric_bits: List[int] = []
 
     for name in names:
-        value = _qt_enum_value(Qt, name, ("AlignmentFlag",))
+        value = _qt_enum_value(Qt, name, ("AlignmentFlag", "Alignment"))
         if value is None:
             continue
         values.append(value)
@@ -231,12 +231,14 @@ def _qt_alignment_candidates(*names: str) -> List[Any]:
         numeric = 0
         for bit in numeric_bits:
             numeric |= bit
-        alignment_type = getattr(Qt, "AlignmentFlag", None)
-        if alignment_type is not None:
+        for alignment_scope in ("Alignment", "AlignmentFlag"):
+            alignment_type = getattr(Qt, alignment_scope, None)
+            if alignment_type is None:
+                continue
             try:
                 candidates.append(alignment_type(numeric))
             except Exception:
-                pass
+                continue
         candidates.append(numeric)
 
     if not candidates:
