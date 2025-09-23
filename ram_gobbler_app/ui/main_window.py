@@ -196,6 +196,87 @@ def _qt_enum_to_int(value: Any) -> Optional[int]:
         return None
 
 
+def _qt_alignment_candidates(*names: str) -> List[Any]:
+    """Return best-effort candidates for combining Qt alignment flags."""
+
+    if not QT_AVAILABLE:
+        return []
+
+    values: List[Any] = []
+    numeric_bits: List[int] = []
+
+    for name in names:
+        value = _qt_enum_value(Qt, name, ("AlignmentFlag",))
+        if value is None:
+            continue
+        values.append(value)
+        numeric = _qt_enum_to_int(value)
+        if numeric is not None:
+            numeric_bits.append(numeric)
+
+    candidates: List[Any] = []
+
+    if values:
+        combined = values[0]
+        for value in values[1:]:
+            try:
+                combined = combined | value
+            except TypeError:
+                combined = None
+                break
+        if combined is not None:
+            candidates.append(combined)
+
+    if numeric_bits:
+        numeric = 0
+        for bit in numeric_bits:
+            numeric |= bit
+        alignment_type = getattr(Qt, "AlignmentFlag", None)
+        if alignment_type is not None:
+            try:
+                candidates.append(alignment_type(numeric))
+            except Exception:
+                pass
+        candidates.append(numeric)
+
+    if not candidates:
+        fallback_map = {
+            "AlignLeft": 0x0001,
+            "AlignRight": 0x0002,
+            "AlignHCenter": 0x0004,
+            "AlignJustify": 0x0008,
+            "AlignTop": 0x0020,
+            "AlignBottom": 0x0040,
+            "AlignVCenter": 0x0080,
+            "AlignCenter": 0x0084,
+        }
+        numeric = 0
+        for name in names:
+            numeric |= fallback_map.get(name, 0)
+        if numeric:
+            candidates.append(numeric)
+
+    return candidates
+
+
+def _qt_size_policy_candidates(name: str) -> List[Any]:
+    """Return usable candidates for ``QSizePolicy`` enum lookups."""
+
+    candidates: List[Any] = []
+    for scopes in ((), ("Policy",)):
+        value = _qt_enum_value(QSizePolicy, name, scopes)
+        if value is not None:
+            candidates.append(value)
+
+    numeric_candidates: List[int] = []
+    for value in candidates:
+        numeric = _qt_enum_to_int(value)
+        if numeric is not None:
+            numeric_candidates.append(numeric)
+
+    return candidates + numeric_candidates
+
+
 def relative_luminance(color: str) -> float:
     """Return the W3C relative luminance for ``color``."""
 
@@ -432,46 +513,12 @@ class MainWindow(QMainWindow):
                 self.logo_label.setToolTip("RamGobbler")
             except Exception:
                 pass
-        if QT_AVAILABLE:
-            align_right = _qt_enum_value(Qt, "AlignRight", ("AlignmentFlag",))
-            align_vcenter = _qt_enum_value(Qt, "AlignVCenter", ("AlignmentFlag",))
-            aligned_candidates: List[Any] = []
-
-            combined = None
-            for flag in (align_right, align_vcenter):
-                if flag is None:
-                    continue
-                if combined is None:
-                    combined = flag
-                    continue
-                try:
-                    combined = combined | flag
-                except TypeError:
-                    combined = None
-                    break
-            if combined is not None:
-                aligned_candidates.append(combined)
-
-            numeric = 0
-            for flag in (align_right, align_vcenter):
-                bit = _qt_enum_to_int(flag)
-                if bit is not None:
-                    numeric |= bit
-            if numeric:
-                alignment_flag = getattr(Qt, "AlignmentFlag", None)
-                if alignment_flag is not None:
-                    try:
-                        aligned_candidates.append(alignment_flag(numeric))
-                    except Exception:
-                        pass
-                aligned_candidates.append(numeric)
-
-            for alignment in aligned_candidates:
-                try:
-                    self.logo_label.setAlignment(alignment)
-                    break
-                except Exception:
-                    continue
+        for alignment in _qt_alignment_candidates("AlignRight", "AlignVCenter"):
+            try:
+                self.logo_label.setAlignment(alignment)
+                break
+            except Exception:
+                continue
         self._configure_logo_label()
         self._set_logo_pixmap()
         tb.addWidget(self.logo_label)
@@ -709,6 +756,32 @@ class MainWindow(QMainWindow):
         if label is None:
             return
 
+        if hasattr(label, "setSizePolicy"):
+            fixed_candidates = _qt_size_policy_candidates("Fixed")
+            applied = False
+            for candidate in fixed_candidates:
+                try:
+                    label.setSizePolicy(candidate, candidate)
+                    applied = True
+                    break
+                except Exception:
+                    continue
+            if not applied and fixed_candidates:
+                numeric = _qt_enum_to_int(fixed_candidates[0])
+                if numeric is not None:
+                    try:
+                        label.setSizePolicy(numeric, numeric)
+                        applied = True
+                    except Exception:
+                        pass
+            if not applied:
+                setter = getattr(label, "setFixedSize", None)
+                if callable(setter):
+                    try:
+                        setter(44, 44)
+                    except Exception:
+                        pass
+
         stylesheet_bits = [
             "padding: 2px",
             "border-radius: 16px",
@@ -740,23 +813,6 @@ class MainWindow(QMainWindow):
                 label.setAutoFillBackground(False)
             except Exception:
                 pass
-
-        if hasattr(label, "setSizePolicy") and QSizePolicy is not None:
-            fixed = _qt_enum_value(QSizePolicy, "Fixed", ("Policy",))
-            if fixed is None:
-                fixed = getattr(QSizePolicy, "Fixed", None)
-            if fixed is not None:
-                try:
-                    label.setSizePolicy(fixed, fixed)
-                except TypeError:
-                    fixed_int = _qt_enum_to_int(fixed)
-                    if fixed_int is not None:
-                        try:
-                            label.setSizePolicy(fixed_int, fixed_int)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
 
         if QT_AVAILABLE and hasattr(label, "setAttribute"):
             attributes = [
