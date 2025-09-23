@@ -2958,7 +2958,7 @@ class SettingsDialog(QDialog):
         self.btn_color_settings = QPushButton("👑 Color Settings")
         self.btn_color_settings.setAutoDefault(False)
         self.btn_color_settings.setDefault(False)
-        self.btn_color_settings.clicked.connect(self._handle_color_settings)
+        self.btn_color_settings.clicked.connect(self._handle_color_settings_button)
         actions_layout.addWidget(self.btn_color_settings)
 
         self.btn_group_settings = QPushButton("Group Settings…")
@@ -3041,7 +3041,7 @@ class SettingsDialog(QDialog):
         if theme not in {"light", "dark", "custom"}:
             theme = "dark"
         if theme == "custom":
-            self._handle_color_settings()
+            self._preview_theme("custom")
             return
         self._preview_theme(theme)
 
@@ -3062,7 +3062,12 @@ class SettingsDialog(QDialog):
         finally:
             self._loading_theme = False
 
-    def _handle_color_settings(self) -> None:
+    def _handle_color_settings_button(self) -> None:
+        self._handle_color_settings(force=True)
+
+    def _handle_color_settings(self, *, force: bool = False) -> None:
+        if not force:
+            return
         self._ensure_custom_selected()
         self._preview_theme("custom")
         if self._trigger_callback(self._on_open_color_settings):
