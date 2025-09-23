@@ -26,6 +26,18 @@ def test_config_theme_palette_customisation():
     assert palette == {"text": "#101010", "background": "#202020", "button": "#303030"}
 
 
+def test_custom_theme_round_trip():
+    cfg = Config("dummy")
+    custom = {"text": "#0f0f0f", "background": "#202123", "button": "#9966ff"}
+    cfg.custom_theme_colors = dict(custom)
+    cfg.theme = "custom"
+    assert cfg.theme_palette() == custom
+    cfg.reset_theme_colors("dark")
+    assert cfg.custom_theme_colors == custom
+    cfg.theme = "custom"
+    assert cfg.theme_palette_for("custom") == custom
+
+
 def test_color_helpers_adjustment():
     assert lighten_color("#101010", 120) == "#131313"
     assert darken_color("#202020", 150) == "#151515"

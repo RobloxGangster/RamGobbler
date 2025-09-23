@@ -2897,6 +2897,7 @@ class SettingsDialog(QDialog):
         on_import_settings: Optional[Callable[[], None]] = None,
         on_export_settings: Optional[Callable[[], None]] = None,
         on_open_group_settings: Optional[Callable[[], None]] = None,
+        on_preview_theme: Optional[Callable[[str], None]] = None,
     ):
         """Build the settings form and seed it from ``config``."""
 
@@ -2908,11 +2909,15 @@ class SettingsDialog(QDialog):
         self._on_import_settings = on_import_settings
         self._on_export_settings = on_export_settings
         self._on_open_group_settings = on_open_group_settings
+        self._on_preview_theme = on_preview_theme
+        self._loading_theme = False
 
         form = QFormLayout(self)
         self.cmb_theme = QComboBox()
         self.cmb_theme.addItem("Dark", "dark")
         self.cmb_theme.addItem("Light", "light")
+        self.cmb_theme.addItem("👑 Custom", "custom")
+        self.cmb_theme.currentIndexChanged.connect(self._handle_theme_changed)
         self.kse = QKeySequenceEdit()
         self.cb_wake = QCheckBox("Gobble on wake from sleep")
         self.cb_show_system = QCheckBox("Show system processes (⚠️)")
@@ -2928,7 +2933,9 @@ class SettingsDialog(QDialog):
         self.sb_batt_factor = QSpinBox()
         self.sb_batt_factor.setRange(1, 4)
 
+        self._loading_theme = True
         self._load_from_config()
+        self._loading_theme = False
 
         form.addRow("Theme:", self.cmb_theme)
         form.addRow("Global hotkey:", self.kse)
@@ -2989,8 +2996,15 @@ class SettingsDialog(QDialog):
         self.cfg.show_system = bool(self.cb_show_system.isChecked())
         self.cfg.protect_system = bool(self.cb_protect_system.isChecked())
         self.cfg.pressure_enabled = bool(self.cb_pressure.isChecked())
-        theme = self.cmb_theme.currentData()
-        self.cfg.theme = theme if theme in {"light", "dark"} else "dark"
+        previous_theme = getattr(self.cfg, "theme", "dark")
+        theme_value = self.cmb_theme.currentData()
+        if theme_value not in {"light", "dark", "custom"}:
+            theme_value = "dark"
+        self.cfg.theme = theme_value
+        if theme_value in {"light", "dark"} and theme_value != previous_theme:
+            self.cfg.reset_theme_colors(theme_value)
+        if theme_value == "custom":
+            self.cfg.theme_colors = dict(self.cfg.theme_palette_for("custom"))
         self.cfg.tray_mode = bool(self.cb_tray_mode.isChecked())
         self.cfg.startup_enabled = bool(self.cb_startup.isChecked())
         self.cfg.min_free_percent = int(self.sb_min_free.value())
@@ -3027,8 +3041,39 @@ class SettingsDialog(QDialog):
         self.cmb_batt.setCurrentText(cfg.battery_mode)
         self.sb_batt_factor.setValue(int(cfg.battery_slow_factor))
 
+    def _handle_theme_changed(self) -> None:
+        if self._loading_theme:
+            return
+        theme = self.cmb_theme.currentData()
+        if theme not in {"light", "dark", "custom"}:
+            theme = "dark"
+        if theme == "custom":
+            self._handle_color_settings()
+            return
+        self._preview_theme(theme)
+
+    def _preview_theme(self, theme: str) -> None:
+        callback = self._on_preview_theme
+        if callable(callback):
+            callback(theme)
+
+    def _ensure_custom_selected(self) -> None:
+        if self.cmb_theme.currentData() == "custom":
+            return
+        idx = self.cmb_theme.findData("custom")
+        if idx < 0:
+            return
+        self._loading_theme = True
+        try:
+            self.cmb_theme.setCurrentIndex(idx)
+        finally:
+            self._loading_theme = False
+
     def _handle_color_settings(self) -> None:
-        self._trigger_callback(self._on_open_color_settings)
+        self._ensure_custom_selected()
+        self._preview_theme("custom")
+        if self._trigger_callback(self._on_open_color_settings):
+            self._preview_theme("custom")
 
     def _handle_group_settings(self) -> None:
         if self._trigger_callback(self._on_open_group_settings):

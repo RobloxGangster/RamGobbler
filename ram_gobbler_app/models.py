@@ -7,7 +7,7 @@ import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Deque, List, Optional
+from typing import Deque, Dict, List, Optional
 from collections import deque
 
 from .constants import (
@@ -126,7 +126,9 @@ class Config:
         self.targets: List[Target] = []
         self.groups: List[Group] = []
         self.theme: str = "dark"
-        self.theme_colors: dict[str, str] = self.default_theme_colors(self.theme)
+        defaults = self.default_theme_colors(self.theme)
+        self.theme_colors: dict[str, str] = dict(defaults)
+        self.custom_theme_colors: dict[str, str] = dict(defaults)
         self.tray_mode: bool = True
         self.startup_enabled: bool = False
         self.hotkey: str = ""
@@ -183,22 +185,31 @@ class Config:
             self.daily_recap = raw.get("daily_recap", self.daily_recap)
             self.diag_level = int(raw.get("diag_level", 0))
             self.version = max(int(raw.get("version", 1)), 5)
+            defaults = self.default_theme_colors(
+                self.theme if self.theme in {"light", "dark"} else "dark"
+            )
             raw_theme_colors = raw.get("theme_colors", {})
-            if isinstance(raw_theme_colors, dict):
-                self.theme_colors = {
-                    key: value
-                    for key, value in raw_theme_colors.items()
-                    if isinstance(key, str) and isinstance(value, str)
-                }
-            else:
-                self.theme_colors = {}
+            self.theme_colors = self._validate_palette(raw_theme_colors, defaults)
+
+            raw_custom_colors = raw.get("custom_theme_colors")
+            if raw_custom_colors is None and self.theme_colors != defaults:
+                raw_custom_colors = self.theme_colors
+            self.custom_theme_colors = self._validate_palette(
+                raw_custom_colors if raw_custom_colors is not None else self.custom_theme_colors,
+                self.custom_theme_colors,
+            )
         except Exception:
             # A corrupted configuration should not prevent the UI from loading;
             # we simply start with an empty list of targets.
             self.targets = []
         finally:
             # Ensure theme palette always has sensible defaults.
-            self.theme_colors = self.theme_palette_overrides()
+            if self.theme == "custom":
+                self.theme_colors = dict(self.custom_theme_colors)
+            else:
+                self.theme_colors = self._validate_palette(
+                    self.theme_colors, self.default_theme_colors(self.theme)
+                )
 
     def save(self) -> None:
         """Persist the current configuration, keeping timestamped backups."""
@@ -235,6 +246,9 @@ class Config:
             "diag_level": self.diag_level,
             "version": self.version,
             "theme_colors": self.theme_palette_overrides(),
+            "custom_theme_colors": self._validate_palette(
+                self.custom_theme_colors, self.default_theme_colors("dark")
+            ),
         }
         with open(self.path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
@@ -261,38 +275,52 @@ class Config:
     def theme_palette(self) -> dict[str, str]:
         """Combine theme defaults with any persisted overrides."""
 
-        palette = self.default_theme_colors(self.theme)
-        overrides = self.theme_palette_overrides()
-        palette.update(
-            {
-                key: value
-                for key, value in overrides.items()
-                if key in {"text", "background", "button"} and isinstance(value, str)
-            }
-        )
-        return palette
+        return self.theme_palette_for(self.theme)
+
+    def theme_palette_for(self, theme: str) -> dict[str, str]:
+        """Return the validated palette for ``theme``."""
+
+        base_key = "light" if theme == "light" else "dark"
+        base = self.default_theme_colors(base_key)
+        if theme == "custom":
+            source: Dict[str, str] = self.custom_theme_colors
+        elif theme == self.theme and theme in {"light", "dark"}:
+            source = self.theme_colors
+        else:
+            source = {}
+        return self._validate_palette(source, base)
 
     def theme_palette_overrides(self) -> dict[str, str]:
         """Return validated overrides, falling back to defaults when empty."""
 
-        if not isinstance(self.theme_colors, dict):
-            return self.default_theme_colors(self.theme)
-        merged: dict[str, str] = {}
-        for key in ("text", "background", "button"):
-            value = self.theme_colors.get(key)
-            if isinstance(value, str) and value:
-                merged[key] = value
-        if len(merged) != 3:
-            defaults = self.default_theme_colors(self.theme)
-            for key, value in defaults.items():
-                merged.setdefault(key, value)
-        return merged
+        return self.theme_palette_for(self.theme)
 
     def reset_theme_colors(self, theme: Optional[str] = None) -> None:
         """Reset colour overrides to the defaults for ``theme``."""
 
         target_theme = theme if theme is not None else self.theme
-        self.theme_colors = self.default_theme_colors(target_theme)
+        base_key = "light" if target_theme == "light" else "dark"
+        defaults = self.default_theme_colors(base_key)
+        if target_theme == "custom":
+            self.custom_theme_colors = dict(defaults)
+            if self.theme == "custom":
+                self.theme_colors = dict(self.custom_theme_colors)
+            return
+        self.theme_colors = dict(defaults)
+
+    @staticmethod
+    def _validate_palette(
+        source: Optional[Dict[str, str]], fallback: Dict[str, str]
+    ) -> dict[str, str]:
+        """Normalise ``source`` ensuring required keys exist."""
+
+        palette = dict(fallback)
+        if isinstance(source, dict):
+            for key in ("text", "background", "button"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    palette[key] = value
+        return palette
 
 
 __all__ = ["Group", "Target", "Config", "CONFIG_PATH"]

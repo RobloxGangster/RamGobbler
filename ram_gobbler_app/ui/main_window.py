@@ -565,18 +565,28 @@ class MainWindow(QMainWindow):
                 splitter.setCollapsible(idx, was_collapsible)
             splitter.blockSignals(False)
 
+    def _preview_theme_selection(self, theme: str) -> None:
+        """Preview ``theme`` without mutating the configuration."""
+
+        target = theme if theme in {"light", "dark", "custom"} else "dark"
+        base_colors = self.config.theme_palette_for(target)
+        palette = build_palette(target, base_colors)
+        self._apply_palette(palette)
+
     def _apply_theme_choice(
         self, theme: str, *, persist: bool = True, previous: Optional[str] = None
     ) -> None:
         """Apply the requested theme and optionally persist it."""
 
-        selected = "light" if theme == "light" else "dark"
+        normalized = theme if theme in {"light", "dark", "custom"} else "dark"
         prior = previous if previous is not None else self.config.theme
-        changed = prior != selected
-        self.config.theme = selected
-        if changed:
-            self.config.reset_theme_colors(selected)
-            self._apply_styles(selected)
+        changed = prior != normalized
+        self.config.theme = normalized
+        if normalized == "custom":
+            self.config.theme_colors = dict(self.config.theme_palette_for("custom"))
+        elif changed:
+            self.config.reset_theme_colors(normalized)
+        self._apply_styles(normalized)
         if persist:
             self.config.save()
 
@@ -1899,6 +1909,21 @@ class MainWindow(QMainWindow):
         prev_tray_mode = self.config.tray_mode
         prev_startup = self.config.startup_enabled
         prev_show_system = self.config.show_system
+        original_palette = getattr(self, "_active_palette", None)
+        if not isinstance(original_palette, dict):
+            original_palette = build_palette(
+                self.config.theme, self.config.theme_palette_for(self.config.theme)
+            )
+        else:
+            original_palette = dict(original_palette)
+
+        preview_applied = False
+
+        def handle_theme_preview(theme: str) -> None:
+            nonlocal preview_applied
+            preview_applied = True
+            self._preview_theme_selection(theme)
+
         dialog = SettingsDialog(
             self.config,
             self,
@@ -1906,6 +1931,7 @@ class MainWindow(QMainWindow):
             on_import_settings=self._import_settings,
             on_export_settings=self._export_settings,
             on_open_group_settings=self._open_group_settings,
+            on_preview_theme=handle_theme_preview,
         )
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
@@ -1935,6 +1961,9 @@ class MainWindow(QMainWindow):
             self.config.save()
             if not startup_msg_shown:
                 self.statusBar().showMessage("Settings saved", 3000)
+        else:
+            if preview_applied:
+                self._apply_palette(original_palette)
 
     def _open_color_settings(self):
         """Allow users to tweak the active palette colours."""
@@ -1942,7 +1971,9 @@ class MainWindow(QMainWindow):
         current = self.config.theme_palette_overrides()
         original_palette = getattr(self, "_active_palette", None)
         if not isinstance(original_palette, dict):
-            original_palette = build_palette(self.config.theme, self.config.theme_palette())
+            original_palette = build_palette(
+                self.config.theme, self.config.theme_palette_for(self.config.theme)
+            )
         else:
             original_palette = dict(original_palette)
 
@@ -1968,13 +1999,16 @@ class MainWindow(QMainWindow):
         chosen = dialog.colors() or {}
         changed = chosen != current
         if changed:
+            previous_theme = self.config.theme
             self.config.theme_colors = dict(chosen)
-
-        self._apply_styles(self.config.theme)
-
-        if changed:
+            self.config.custom_theme_colors = dict(chosen)
+            self.config.theme = "custom"
+            self._apply_theme_choice("custom", persist=False, previous=previous_theme)
             self.config.save()
             self.statusBar().showMessage("Color settings saved", 3000)
+            return
+
+        self._apply_styles(self.config.theme)
 
     def _apply_hotkey(self, hotkey_str: str):
         """Register a global hotkey from the configuration string."""
