@@ -639,10 +639,37 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left)
         splitter.addWidget(right)
         splitter.setSizes([650, 560])
-        splitter.setChildrenCollapsible(False)
-        for idx in range(splitter.count()):
-            splitter.setCollapsible(idx, False)
-        splitter.splitterMoved.connect(self._prevent_splitter_collapse)
+        splitter_set_children_collapsible = getattr(splitter, "setChildrenCollapsible", None)
+        if callable(splitter_set_children_collapsible):
+            try:
+                splitter_set_children_collapsible(False)
+            except Exception:
+                pass
+        count_getter = getattr(splitter, "count", None)
+        section_count = 0
+        if callable(count_getter):
+            try:
+                raw_count = count_getter()
+            except Exception:
+                raw_count = 0
+            try:
+                section_count = int(raw_count)
+            except (TypeError, ValueError):
+                section_count = 0
+        if section_count < 0:
+            section_count = 0
+        for idx in range(section_count):
+            try:
+                splitter.setCollapsible(idx, False)
+            except Exception:
+                continue
+        splitter_moved = getattr(splitter, "splitterMoved", None)
+        connector = getattr(splitter_moved, "connect", None) if splitter_moved else None
+        if callable(connector):
+            try:
+                connector(self._prevent_splitter_collapse)
+            except Exception:
+                pass
         self.splitter = splitter
 
         lv = QVBoxLayout(left)
@@ -671,9 +698,27 @@ class MainWindow(QMainWindow):
 
         self.proc_model = ProcessTreeModel(include_system=self.config.show_system)
         self.proxy = ProcessFilterProxyModel()
-        self.proxy.setSourceModel(self.proc_model)
-        self.proxy.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.proxy.setFilterKeyColumn(-1)
+        source_setter = getattr(self.proxy, "setSourceModel", None)
+        if callable(source_setter):
+            try:
+                source_setter(self.proc_model)
+            except Exception:
+                pass
+        case_insensitive = _qt_enum_value(Qt, "CaseInsensitive", ("CaseSensitivity",))
+        if case_insensitive is None:
+            case_insensitive = 1
+        sensitivity_setter = getattr(self.proxy, "setFilterCaseSensitivity", None)
+        if callable(sensitivity_setter):
+            try:
+                sensitivity_setter(case_insensitive)
+            except Exception:
+                pass
+        key_column_setter = getattr(self.proxy, "setFilterKeyColumn", None)
+        if callable(key_column_setter):
+            try:
+                key_column_setter(-1)
+            except Exception:
+                pass
         self.table = QTreeView()
         self.table.setModel(self.proxy)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
