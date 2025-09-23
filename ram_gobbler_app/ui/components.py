@@ -3041,7 +3041,7 @@ class SettingsDialog(QDialog):
         if theme not in {"light", "dark", "custom"}:
             theme = "dark"
         if theme == "custom":
-            self._handle_color_settings()
+            self._preview_theme("custom")
             return
         self._preview_theme(theme)
 
