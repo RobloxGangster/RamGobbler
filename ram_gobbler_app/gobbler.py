@@ -155,6 +155,7 @@ class Gobbler(threading.Thread):
                     eff_interval = min(eff_interval, 8.0)
                 if now_ts - target.last_gobble_ts < eff_interval:
                     continue
+                matched_pids: Optional[List[int]] = None
                 ok_cool, reason_cool = self._check_cooldown_and_cap(target, now_ts)
                 if not ok_cool:
                     self.on_result(index, reason_cool)
@@ -183,18 +184,22 @@ class Gobbler(threading.Thread):
                             pass
                     self._record_event(index, {"ts": now_ts, "type": "skip", "reason": reason})
                     continue
-                if target.background_only and foreground_pid in match_pids(target):
-                    reason = "foreground"
-                    self.on_result(index, reason)
-                    with self._lock:
-                        try:
-                            self.config.targets[index].last_skip_reason = reason
-                        except IndexError:
-                            pass
-                    continue
+                if target.background_only:
+                    matched_pids = match_pids(target)
+                    if foreground_pid in matched_pids:
+                        reason = "foreground"
+                        self.on_result(index, reason)
+                        with self._lock:
+                            try:
+                                self.config.targets[index].last_skip_reason = reason
+                            except IndexError:
+                                pass
+                        continue
                 if target.cpu_skip_threshold > 0:
+                    if matched_pids is None:
+                        matched_pids = match_pids(target)
                     skip = False
-                    for pid in match_pids(target):
+                    for pid in matched_pids:
                         try:
                             proc = psutil.Process(pid)
                             if proc.cpu_percent(interval=None) > target.cpu_skip_threshold:
@@ -211,7 +216,9 @@ class Gobbler(threading.Thread):
                 if self.config.idle_seconds > 0 and user_idle_seconds() < self.config.idle_seconds:
                     self.on_result(index, "idle")
                     continue
-                self._perform_gobble(index, target, gobble_reason)
+                if matched_pids is None:
+                    matched_pids = match_pids(target)
+                self._perform_gobble(index, target, gobble_reason, pids=matched_pids)
             if time.time() - self._last_flush > 10:
                 try:
                     self.metrics.save()
@@ -309,17 +316,24 @@ class Gobbler(threading.Thread):
                 return self.config.targets[index].active
             return False
 
-    def _perform_gobble(self, index: int, target: Target, reason: str) -> None:
+    def _perform_gobble(
+        self,
+        index: int,
+        target: Target,
+        reason: str,
+        *,
+        pids: Optional[List[int]] = None,
+    ) -> None:
         """Execute the gobble operation for ``target`` and update state."""
 
-        pids = match_pids(target)
+        pid_list = match_pids(target) if pids is None else pids
         total_delta = 0.0
         total_rss = 0.0
         gobbled = 0
         helper_needed = False
         aborted = False
 
-        for pid in pids:
+        for pid in pid_list:
             if not self._is_active(index):
                 aborted = True
                 break
