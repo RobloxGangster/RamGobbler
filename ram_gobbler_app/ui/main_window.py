@@ -789,14 +789,7 @@ class MainWindow(QMainWindow):
                     pass
             return
 
-        cropped = _crop_logo_pixmap(pixmap)
-        if cropped is not None:
-            pixmap = cropped
 
-        target = max(1, _TOOLBAR_HEIGHT - 2 * _TOOLBAR_LOGO_PADDING)
-        rendered = _render_logo_pixmap(pixmap, target)
-        if rendered is not None:
-            pixmap = rendered
 
         if hasattr(label, "setPixmap"):
             try:
