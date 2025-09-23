@@ -433,26 +433,45 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         if QT_AVAILABLE:
-            align_bits = [
-                _qt_enum_to_int(_qt_enum_value(Qt, "AlignRight", ("AlignmentFlag",))),
-                _qt_enum_to_int(_qt_enum_value(Qt, "AlignVCenter", ("AlignmentFlag",))),
-            ]
-            alignment = 0
-            for bit in align_bits:
+            align_right = _qt_enum_value(Qt, "AlignRight", ("AlignmentFlag",))
+            align_vcenter = _qt_enum_value(Qt, "AlignVCenter", ("AlignmentFlag",))
+            aligned_candidates: List[Any] = []
+
+            combined = None
+            for flag in (align_right, align_vcenter):
+                if flag is None:
+                    continue
+                if combined is None:
+                    combined = flag
+                    continue
+                try:
+                    combined = combined | flag
+                except TypeError:
+                    combined = None
+                    break
+            if combined is not None:
+                aligned_candidates.append(combined)
+
+            numeric = 0
+            for flag in (align_right, align_vcenter):
+                bit = _qt_enum_to_int(flag)
                 if bit is not None:
-                    alignment |= bit
-            if alignment:
+                    numeric |= bit
+            if numeric:
+                alignment_flag = getattr(Qt, "AlignmentFlag", None)
+                if alignment_flag is not None:
+                    try:
+                        aligned_candidates.append(alignment_flag(numeric))
+                    except Exception:
+                        pass
+                aligned_candidates.append(numeric)
+
+            for alignment in aligned_candidates:
                 try:
                     self.logo_label.setAlignment(alignment)
-                except TypeError:
-                    alignment_flag = getattr(Qt, "AlignmentFlag", None)
-                    if alignment_flag is not None:
-                        try:
-                            self.logo_label.setAlignment(alignment_flag(alignment))
-                        except Exception:
-                            pass
+                    break
                 except Exception:
-                    pass
+                    continue
         self._configure_logo_label()
         self._set_logo_pixmap()
         tb.addWidget(self.logo_label)
@@ -625,22 +644,49 @@ class MainWindow(QMainWindow):
 
         scaler = getattr(pixmap, "scaled", None)
         if callable(scaler):
-            try:
-                keep = _qt_enum_to_int(
-                    _qt_enum_value(Qt, "KeepAspectRatio", ("AspectRatioMode",))
-                ) or 1
-                transform = (
-                    _qt_enum_to_int(
-                        _qt_enum_value(Qt, "SmoothTransformation", ("TransformationMode",))
-                    )
-                    or _qt_enum_to_int(
-                        _qt_enum_value(Qt, "FastTransformation", ("TransformationMode",))
-                    )
-                    or 0
-                )
-                pixmap = scaler(44, 44, keep, transform)
-            except Exception:
-                pass
+            aspect_ratio = _qt_enum_value(Qt, "KeepAspectRatio", ("AspectRatioMode",))
+            smooth = _qt_enum_value(Qt, "SmoothTransformation", ("TransformationMode",))
+            fast = _qt_enum_value(Qt, "FastTransformation", ("TransformationMode",))
+            transform_mode = smooth or fast
+
+            scaled = False
+            if aspect_ratio is not None and transform_mode is not None:
+                try:
+                    pixmap = scaler(44, 44, aspect_ratio, transform_mode)
+                    scaled = True
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
+
+            if not scaled and aspect_ratio is not None:
+                try:
+                    pixmap = scaler(44, 44, aspect_ratio)
+                    scaled = True
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
+
+            if not scaled:
+                keep_int = _qt_enum_to_int(aspect_ratio)
+                transform_int = _qt_enum_to_int(transform_mode)
+                args: List[Any] = [44, 44]
+                if keep_int is not None:
+                    args.append(keep_int)
+                    if transform_int is not None:
+                        args.append(transform_int)
+                try:
+                    pixmap = scaler(*args)
+                    scaled = True
+                except Exception:
+                    pass
+
+            if not scaled:
+                try:
+                    pixmap = scaler(44, 44)
+                except Exception:
+                    pass
 
         if hasattr(label, "setPixmap"):
             try:
@@ -697,9 +743,18 @@ class MainWindow(QMainWindow):
 
         if hasattr(label, "setSizePolicy") and QSizePolicy is not None:
             fixed = _qt_enum_value(QSizePolicy, "Fixed", ("Policy",))
+            if fixed is None:
+                fixed = getattr(QSizePolicy, "Fixed", None)
             if fixed is not None:
                 try:
                     label.setSizePolicy(fixed, fixed)
+                except TypeError:
+                    fixed_int = _qt_enum_to_int(fixed)
+                    if fixed_int is not None:
+                        try:
+                            label.setSizePolicy(fixed_int, fixed_int)
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
