@@ -73,7 +73,7 @@ def test_continuous_trigger_bypasses_pressure(tmp_path):
     def fake_allow(self):
         return False, 'Pressure off'
 
-    def fake_perform(self, index, target, reason):
+    def fake_perform(self, index, target, reason, *, pids=None):
         target.last_gobble_ts = time.time()
         results.append(reason)
 
