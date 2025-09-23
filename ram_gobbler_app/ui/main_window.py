@@ -326,6 +326,7 @@ class MainWindow(QMainWindow):
         self._group_menu_actions: List[QAction] = []
 
         tb = QToolBar()
+        self._toolbar = tb
         tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
         if hasattr(tb, "setContentsMargins"):
@@ -393,11 +394,14 @@ class MainWindow(QMainWindow):
         right = QWidget()
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setSizes([650, 560])
+        default_splitter_sizes = [650, 560]
+        splitter.setSizes(default_splitter_sizes)
         splitter.setChildrenCollapsible(False)
         for idx in range(splitter.count()):
             splitter.setCollapsible(idx, False)
-        splitter.splitterMoved.connect(self._prevent_splitter_collapse)
+        self._set_locked_splitter_sizes(default_splitter_sizes)
+        self._disable_splitter_handles(splitter)
+        splitter.splitterMoved.connect(self._lock_splitter_position)
         self.splitter = splitter
 
         lv = QVBoxLayout(left)
@@ -489,6 +493,9 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.dashboard)
         self.setCentralWidget(self.stack)
 
+        self._splitter_alignment_attempts = 0
+        QTimer.singleShot(0, self._align_splitter_to_toolbar_gap)
+
         self.lbl_total = QLabel("Session reclaimed: 0.0 MB")
         self.statusBar().addPermanentWidget(self.lbl_total)
         self.statusBar().showMessage("Ready")
@@ -513,57 +520,282 @@ class MainWindow(QMainWindow):
 
         self._update_toolbar_scope()
 
-    def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
-        """Ensure splitter handles cannot collapse panels entirely."""
+    def _set_locked_splitter_sizes(self, sizes: List[int]) -> None:
+        """Store splitter sizes and derive the locked ratio."""
 
-        splitter = getattr(self, "splitter", None)
-        if splitter is None:
+        total = sum(sizes) if sizes else 0
+        if total <= 0:
+            self._locked_splitter_sizes = list(sizes or [])
+            self._locked_splitter_ratio = None
             return
 
-        sizes = splitter.sizes()
-        if not sizes:
-            return
-
-        total = sum(sizes)
-        handle_width = splitter.handleWidth()
-        if splitter.orientation() == Qt.Horizontal:
-            available = splitter.width()
+        self._locked_splitter_sizes = list(sizes)
+        if len(sizes) >= 2:
+            self._locked_splitter_ratio = sizes[0] / total
         else:
-            available = splitter.height()
-        max_pos = max(0, available - handle_width)
-        edge_slop = min(max(1, handle_width // 2), max_pos)
+            self._locked_splitter_ratio = None
 
-        if len(sizes) == 2 and total > 0:
-            if pos <= edge_slop:
-                self._set_splitter_sizes([0, total])
-                return
-            if pos >= max_pos - edge_slop:
-                self._set_splitter_sizes([total, 0])
-                return
+    def _schedule_splitter_alignment_retry(self) -> None:
+        """Retry aligning the splitter a limited number of times."""
 
-        min_size = 1
-        if all(size >= min_size for size in sizes):
+        attempts = getattr(self, "_splitter_alignment_attempts", 0)
+        if attempts >= 10 or not hasattr(QTimer, "singleShot"):
+            return
+        self._splitter_alignment_attempts = attempts + 1
+        QTimer.singleShot(50, self._align_splitter_to_toolbar_gap)
+
+    def _align_splitter_to_toolbar_gap(self) -> None:
+        """Position the splitter so it lines up with the toolbar buttons."""
+
+        splitter = getattr(self, "splitter", None)
+        toolbar = getattr(self, "_toolbar", None)
+        if splitter is None or toolbar is None:
+            return
+        if not hasattr(toolbar, "widgetForAction"):
             return
 
-        self._set_splitter_sizes([max(size, min_size) for size in sizes])
+        try:
+            view_button = toolbar.widgetForAction(self.act_view)
+            settings_button = toolbar.widgetForAction(self.act_settings)
+        except Exception:
+            view_button = settings_button = None
+        if view_button is None or settings_button is None:
+            self._schedule_splitter_alignment_retry()
+            return
+        if not hasattr(view_button, "rect") or not hasattr(settings_button, "rect"):
+            return
+        if not hasattr(view_button, "mapToGlobal") or not hasattr(settings_button, "mapToGlobal"):
+            return
 
-    def _set_splitter_sizes(self, sizes: List[int]) -> None:
-        """Update splitter sizes while temporarily allowing collapse."""
+        try:
+            left_rect = view_button.rect()
+            right_rect = settings_button.rect()
+        except Exception:
+            self._schedule_splitter_alignment_retry()
+            return
+        if left_rect is None or right_rect is None or left_rect.isNull() or right_rect.isNull():
+            self._schedule_splitter_alignment_retry()
+            return
+
+        try:
+            left_point = view_button.mapToGlobal(left_rect.topRight())
+            right_point = settings_button.mapToGlobal(right_rect.topLeft())
+        except Exception:
+            self._schedule_splitter_alignment_retry()
+            return
+        if left_point is None or right_point is None:
+            self._schedule_splitter_alignment_retry()
+            return
+        if not hasattr(left_point, "x") or not hasattr(right_point, "x"):
+            return
+
+        try:
+            target_x = (float(left_point.x()) + float(right_point.x())) / 2.0
+        except Exception:
+            self._schedule_splitter_alignment_retry()
+            return
+        if not hasattr(splitter, "mapToGlobal"):
+            return
+
+        try:
+            splitter_origin = splitter.mapToGlobal(splitter.rect().topLeft())
+        except Exception:
+            self._schedule_splitter_alignment_retry()
+            return
+        if splitter_origin is None or not hasattr(splitter_origin, "x"):
+            self._schedule_splitter_alignment_retry()
+            return
+
+        local_x = target_x - float(splitter_origin.x())
+
+        handle_width = 0.0
+        if hasattr(splitter, "handleWidth"):
+            try:
+                handle_width = float(splitter.handleWidth() or 0)
+            except Exception:
+                handle_width = 0.0
+
+        try:
+            sizes = splitter.sizes()
+        except Exception:
+            sizes = []
+        total = sum(sizes)
+        if total <= 0:
+            if hasattr(splitter, "size"):
+                try:
+                    total = float(splitter.size().width()) - handle_width
+                except Exception:
+                    total = 0.0
+            else:
+                total = 0.0
+
+        if total <= 1:
+            self._schedule_splitter_alignment_retry()
+            return
+
+        desired_left = int(round(local_x - handle_width / 2.0))
+        max_left = int(total) - 1
+        if max_left <= 0:
+            self._schedule_splitter_alignment_retry()
+            return
+        desired_left = max(1, min(desired_left, max_left))
+        desired_right = int(total) - desired_left
+        if desired_right <= 0:
+            desired_right = 1
+            desired_left = int(total) - desired_right
+
+        target_sizes = [desired_left, desired_right]
+
+        try:
+            splitter.blockSignals(True)
+        except Exception:
+            pass
+        try:
+            splitter.setSizes(target_sizes)
+        except Exception:
+            self._schedule_splitter_alignment_retry()
+            try:
+                splitter.blockSignals(False)
+            except Exception:
+                pass
+            return
+        finally:
+            try:
+                splitter.blockSignals(False)
+            except Exception:
+                pass
+
+        try:
+            actual = splitter.sizes()
+        except Exception:
+            actual = target_sizes
+        if actual and sum(actual) > 0:
+            self._set_locked_splitter_sizes(actual)
+        else:
+            self._set_locked_splitter_sizes(target_sizes)
+        self._splitter_alignment_attempts = 0
+
+    def _disable_splitter_handles(self, splitter: QSplitter) -> None:
+        """Prevent the splitter handle from being interactive or visible."""
+
+        handle_width = 12
+        try:
+            handle_width = max(handle_width, splitter.handleWidth())
+            splitter.setHandleWidth(handle_width)
+        except Exception:
+            pass
+
+        attr = getattr(Qt, "WA_TransparentForMouseEvents", None)
+        count = 0
+        try:
+            count = splitter.count()
+        except Exception:
+            count = 0
+
+        for idx in range(1, count):
+            try:
+                handle = splitter.handle(idx)
+            except Exception:
+                handle = None
+            if handle is None:
+                continue
+            if attr is not None and hasattr(handle, "setAttribute"):
+                try:
+                    handle.setAttribute(attr, True)
+                except Exception:
+                    pass
+            if hasattr(handle, "setEnabled"):
+                try:
+                    handle.setEnabled(False)
+                except Exception:
+                    pass
+            if hasattr(handle, "setCursor") and hasattr(Qt, "ArrowCursor"):
+                try:
+                    handle.setCursor(Qt.ArrowCursor)
+                except Exception:
+                    pass
+            if hasattr(handle, "setFocusPolicy") and hasattr(Qt, "NoFocus"):
+                try:
+                    handle.setFocusPolicy(Qt.NoFocus)
+                except Exception:
+                    pass
+
+    def _lock_splitter_position(self, _pos: int, _index: int) -> None:
+        """Keep the splitter locked to the initial size ratio."""
 
         splitter = getattr(self, "splitter", None)
         if splitter is None:
             return
 
-        splitter.blockSignals(True)
         try:
-            collapsible_states = [splitter.isCollapsible(idx) for idx in range(splitter.count())]
-            for idx in range(splitter.count()):
-                splitter.setCollapsible(idx, True)
-            splitter.setSizes(sizes)
+            current = splitter.sizes()
+        except Exception:
+            return
+
+        if not current:
+            return
+
+        locked_sizes = getattr(self, "_locked_splitter_sizes", None)
+        target: Optional[List[int]] = None
+
+        if locked_sizes and len(locked_sizes) == len(current):
+            total = sum(current)
+            if len(current) == 2:
+                if total <= 1:
+                    return
+                left = locked_sizes[0]
+                left = max(1, min(left, total - 1))
+                target = [left, total - left]
+            else:
+                locked_total = sum(locked_sizes)
+                if locked_total <= 0:
+                    return
+                target = []
+                remaining = total
+                count = len(locked_sizes)
+                for idx, size in enumerate(locked_sizes):
+                    if idx == count - 1:
+                        value = max(1, remaining)
+                    else:
+                        try:
+                            value = int(round(total * size / locked_total))
+                        except Exception:
+                            value = 0
+                        min_remaining = count - idx - 1
+                        value = max(1, min(value, remaining - min_remaining))
+                    target.append(value)
+                    remaining -= value
+        else:
+            locked_ratio = getattr(self, "_locked_splitter_ratio", None)
+            if locked_ratio is not None and len(current) == 2:
+                total = sum(current)
+                if total <= 1:
+                    return
+                left = int(round(total * locked_ratio))
+                left = max(1, min(left, total - 1))
+                target = [left, total - left]
+
+        if target is None or target == current:
+            return
+
+        try:
+            splitter.blockSignals(True)
+        except Exception:
+            pass
+        try:
+            splitter.setSizes(target)
         finally:
-            for idx, was_collapsible in enumerate(collapsible_states):
-                splitter.setCollapsible(idx, was_collapsible)
-            splitter.blockSignals(False)
+            try:
+                splitter.blockSignals(False)
+            except Exception:
+                pass
+
+        try:
+            actual = splitter.sizes()
+        except Exception:
+            actual = target
+        if actual:
+            self._set_locked_splitter_sizes(actual)
 
     def _preview_theme_selection(self, theme: str) -> None:
         """Preview ``theme`` without mutating the configuration."""
@@ -952,11 +1184,12 @@ class MainWindow(QMainWindow):
                 background: {palette['menu_item_hover']};
             }}
             QSplitter::handle {{
-                background: {palette['splitter_handle']};
+                background: transparent;
+                border: none;
                 margin: 0 6px;
             }}
             QSplitter::handle:pressed {{
-                background: {palette['splitter_pressed']};
+                background: transparent;
             }}
         """
         self.setStyleSheet(stylesheet)
