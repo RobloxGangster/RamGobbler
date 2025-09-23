@@ -610,9 +610,12 @@ class MainWindow(QMainWindow):
         if label is None:
             return
 
-        stylesheet_bits = ["padding: 2px", "border-radius: 16px"]
-        if QT_AVAILABLE:
-            stylesheet_bits.append("background-color: transparent")
+        stylesheet_bits = [
+            "padding: 2px",
+            "border-radius: 16px",
+            "background: transparent",
+            "background-color: transparent",
+        ]
         stylesheet = "; ".join(stylesheet_bits) + ";"
 
         if hasattr(label, "setStyleSheet"):
@@ -621,13 +624,44 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        if QT_AVAILABLE and hasattr(label, "setAttribute"):
-            translucent = getattr(Qt, "WA_TranslucentBackground", None)
-            if isinstance(translucent, int):
+        if hasattr(label, "setContentsMargins"):
+            try:
+                label.setContentsMargins(0, 0, 0, 0)
+            except Exception:
+                pass
+
+        if hasattr(label, "setMargin"):
+            try:
+                label.setMargin(0)
+            except Exception:
+                pass
+
+        if hasattr(label, "setAutoFillBackground"):
+            try:
+                label.setAutoFillBackground(False)
+            except Exception:
+                pass
+
+        if hasattr(label, "setSizePolicy") and QSizePolicy is not None:
+            fixed = getattr(QSizePolicy, "Fixed", None)
+            if isinstance(fixed, int):
                 try:
-                    label.setAttribute(translucent)
+                    label.setSizePolicy(fixed, fixed)
                 except Exception:
                     pass
+
+        if QT_AVAILABLE and hasattr(label, "setAttribute"):
+            attributes = [
+                getattr(Qt, "WA_TranslucentBackground", None),
+                getattr(Qt, "WA_NoSystemBackground", None),
+                getattr(Qt, "WA_StyledBackground", None),
+            ]
+            for attribute in attributes:
+                if isinstance(attribute, int):
+                    try:
+                        label.setAttribute(attribute, True)
+                    except Exception:
+                        continue
 
     def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
         """Ensure splitter handles cannot collapse panels entirely."""
@@ -1095,6 +1129,8 @@ class MainWindow(QMainWindow):
                     dialog.apply_palette(palette)
                 except Exception:
                     continue
+
+        self._configure_logo_label()
 
     def _init_tray(self):
         """Initialise the optional system-tray icon and context menu."""
