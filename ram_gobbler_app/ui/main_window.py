@@ -279,6 +279,53 @@ def _qt_size_policy_candidates(name: str) -> List[Any]:
     return candidates + numeric_candidates
 
 
+def _qt_standard_icon(widget: Any, name: str) -> Optional[Any]:
+    """Look up a ``QStyle`` standard pixmap by ``name`` for ``widget``."""
+
+    if not QT_AVAILABLE or widget is None:
+        return None
+
+    style_getter = getattr(widget, "style", None)
+    if not callable(style_getter):
+        return None
+
+    try:
+        style = style_getter()
+    except Exception:
+        style = None
+    if style is None:
+        return None
+
+    enum = _qt_enum_value(QStyle, name, ("StandardPixmap",))
+    numeric = _qt_enum_to_int(enum)
+    if enum is None and numeric is None:
+        raw = getattr(QStyle, name, None)
+        enum = raw
+        numeric = _qt_enum_to_int(raw)
+
+    getter = getattr(style, "standardIcon", None)
+    if not callable(getter):
+        return None
+
+    if enum is not None:
+        try:
+            icon = getter(enum)
+            if icon is not None:
+                return icon
+        except Exception:
+            pass
+
+    if numeric is not None:
+        try:
+            icon = getter(numeric)
+            if icon is not None:
+                return icon
+        except Exception:
+            pass
+
+    return None
+
+
 def _device_pixel_ratio(widget: Any) -> float:
     """Return the device-pixel ratio for ``widget`` when available."""
 
@@ -482,7 +529,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1240, 780)
-        self.setWindowIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        window_icon = _qt_standard_icon(self, "SP_ComputerIcon")
+        if window_icon is not None:
+            try:
+                self.setWindowIcon(window_icon)
+            except Exception:
+                pass
 
         self.config = config
         self.session_reclaimed_total = 0.0
@@ -514,7 +566,11 @@ class MainWindow(QMainWindow):
                 "QToolButton {padding: 4px 8px; margin-right: 2px;}"
             )
 
-        act_refresh = QAction(self.style().standardIcon(QStyle.SP_BrowserReload), "Refresh Processes", self)
+        refresh_icon = _qt_standard_icon(self, "SP_BrowserReload")
+        if refresh_icon is not None:
+            act_refresh = QAction(refresh_icon, "Refresh Processes", self)
+        else:
+            act_refresh = QAction("Refresh Processes", self)
         act_refresh.triggered.connect(self._refresh_processes)
         tb.addAction(act_refresh)
 
@@ -1363,7 +1419,12 @@ class MainWindow(QMainWindow):
         """Initialise the optional system-tray icon and context menu."""
 
         self.tray = QSystemTrayIcon(self)
-        self.tray.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+        tray_icon = _qt_standard_icon(self, "SP_ComputerIcon")
+        if tray_icon is not None:
+            try:
+                self.tray.setIcon(tray_icon)
+            except Exception:
+                pass
         menu = QMenu()
         act_show = QAction("Show/Hide", self)
         act_show.triggered.connect(self._toggle_window)
