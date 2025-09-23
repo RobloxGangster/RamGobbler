@@ -5,7 +5,7 @@ import json
 import shutil
 import threading
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..constants import (
     APP_NAME,
@@ -159,6 +159,41 @@ def blend_colors(color_a: str, color_b: str, ratio: float) -> str:
     g = int(round(g1 * inv + g2 * ratio))
     b = int(round(b1 * inv + b2 * ratio))
     return _hex_from_rgb(r, g, b)
+
+
+def _qt_enum_value(container: Any, name: str, enum_scopes: Iterable[str] = ()) -> Any:
+    """Return ``name`` from ``container`` or nested enum scopes if present."""
+
+    value = getattr(container, name, None)
+    if value is not None:
+        return value
+
+    for scope_name in enum_scopes:
+        scope = getattr(container, scope_name, None)
+        if scope is None:
+            continue
+        value = getattr(scope, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _qt_enum_to_int(value: Any) -> Optional[int]:
+    """Best-effort conversion of Qt enum objects to integer bitmasks."""
+
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+
+    numeric = getattr(value, "value", None)
+    if isinstance(numeric, int):
+        return numeric
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def relative_luminance(color: str) -> float:
@@ -398,16 +433,24 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         if QT_AVAILABLE:
+            align_bits = [
+                _qt_enum_to_int(_qt_enum_value(Qt, "AlignRight", ("AlignmentFlag",))),
+                _qt_enum_to_int(_qt_enum_value(Qt, "AlignVCenter", ("AlignmentFlag",))),
+            ]
             alignment = 0
-            align_right = getattr(Qt, "AlignRight", None)
-            align_vcenter = getattr(Qt, "AlignVCenter", None)
-            if isinstance(align_right, int):
-                alignment |= align_right
-            if isinstance(align_vcenter, int):
-                alignment |= align_vcenter
+            for bit in align_bits:
+                if bit is not None:
+                    alignment |= bit
             if alignment:
                 try:
                     self.logo_label.setAlignment(alignment)
+                except TypeError:
+                    alignment_flag = getattr(Qt, "AlignmentFlag", None)
+                    if alignment_flag is not None:
+                        try:
+                            self.logo_label.setAlignment(alignment_flag(alignment))
+                        except Exception:
+                            pass
                 except Exception:
                     pass
         self._configure_logo_label()
@@ -583,8 +626,18 @@ class MainWindow(QMainWindow):
         scaler = getattr(pixmap, "scaled", None)
         if callable(scaler):
             try:
-                keep = getattr(Qt, "KeepAspectRatio", 1)
-                transform = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
+                keep = _qt_enum_to_int(
+                    _qt_enum_value(Qt, "KeepAspectRatio", ("AspectRatioMode",))
+                ) or 1
+                transform = (
+                    _qt_enum_to_int(
+                        _qt_enum_value(Qt, "SmoothTransformation", ("TransformationMode",))
+                    )
+                    or _qt_enum_to_int(
+                        _qt_enum_value(Qt, "FastTransformation", ("TransformationMode",))
+                    )
+                    or 0
+                )
                 pixmap = scaler(44, 44, keep, transform)
             except Exception:
                 pass
@@ -643,8 +696,8 @@ class MainWindow(QMainWindow):
                 pass
 
         if hasattr(label, "setSizePolicy") and QSizePolicy is not None:
-            fixed = getattr(QSizePolicy, "Fixed", None)
-            if isinstance(fixed, int):
+            fixed = _qt_enum_value(QSizePolicy, "Fixed", ("Policy",))
+            if fixed is not None:
                 try:
                     label.setSizePolicy(fixed, fixed)
                 except Exception:
@@ -652,16 +705,17 @@ class MainWindow(QMainWindow):
 
         if QT_AVAILABLE and hasattr(label, "setAttribute"):
             attributes = [
-                getattr(Qt, "WA_TranslucentBackground", None),
-                getattr(Qt, "WA_NoSystemBackground", None),
-                getattr(Qt, "WA_StyledBackground", None),
+                _qt_enum_value(Qt, "WA_TranslucentBackground", ("WidgetAttribute",)),
+                _qt_enum_value(Qt, "WA_NoSystemBackground", ("WidgetAttribute",)),
+                _qt_enum_value(Qt, "WA_StyledBackground", ("WidgetAttribute",)),
             ]
             for attribute in attributes:
-                if isinstance(attribute, int):
-                    try:
-                        label.setAttribute(attribute, True)
-                    except Exception:
-                        continue
+                if attribute is None:
+                    continue
+                try:
+                    label.setAttribute(attribute, True)
+                except Exception:
+                    continue
 
     def _prevent_splitter_collapse(self, pos: int, _index: int) -> None:
         """Ensure splitter handles cannot collapse panels entirely."""
