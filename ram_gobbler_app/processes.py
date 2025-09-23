@@ -124,29 +124,57 @@ def list_processes(include_system: bool) -> List[psutil.Process]:
 def match_pids(target: Target) -> List[int]:
     """Return process identifiers matching ``target``'s selection rules."""
 
+    # ``dict`` used as an ordered set so repeated matches collapse naturally.
     pids: Dict[int, None] = {}
+
     try:
         iterator = psutil.process_iter(
             attrs=["pid", "name", "exe", "cmdline", "ppid"]
         )
     except Exception:
         iterator = []  # pragma: no cover - defensive fallback
+
+    # Cache basic metadata so that expensive ``psutil.Process`` lookups are
+    # avoided when resolving parent names.  Building the cache up-front keeps
+    # the matching loop lean and drastically reduces the number of system calls
+    # performed when many processes share the same parent.
+    processes: List[Tuple[psutil.Process, Dict[str, object]]] = []
+    name_cache: Dict[int, str] = {}
+
     for proc in iterator:
         try:
+            info = proc.info
+            processes.append((proc, info))
+            name_cache[proc.pid] = str(info.get("name") or "")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    parent_cache: Dict[int, str] = {}
+
+    for proc, info in processes:
+        try:
             parent_name = ""
-            parent_pid = proc.info.get("ppid")
+            parent_raw = info.get("ppid")
+            parent_pid = parent_raw if isinstance(parent_raw, int) else None
             if parent_pid:
-                try:
-                    parent_name = psutil.Process(parent_pid).name()
-                except Exception:
-                    parent_name = ""
-            info = {
-                "name": proc.info.get("name"),
-                "exe": proc.info.get("exe"),
-                "cmdline": proc.info.get("cmdline"),
+                cached = parent_cache.get(parent_pid)
+                if cached is None:
+                    cached = name_cache.get(parent_pid, "")
+                    if not cached:
+                        try:
+                            cached = psutil.Process(parent_pid).name()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            cached = ""
+                    parent_cache[parent_pid] = cached or ""
+                parent_name = cached
+
+            info_payload = {
+                "name": info.get("name"),
+                "exe": info.get("exe"),
+                "cmdline": info.get("cmdline"),
                 "parent": parent_name,
             }
-            if matches(info, target):
+            if matches(info_payload, target):
                 pids[proc.pid] = None
                 if target.include_children:
                     try:
