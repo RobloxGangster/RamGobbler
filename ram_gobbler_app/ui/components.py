@@ -2997,14 +2997,7 @@ class SettingsDialog(QDialog):
         self.cfg.protect_system = bool(self.cb_protect_system.isChecked())
         self.cfg.pressure_enabled = bool(self.cb_pressure.isChecked())
         previous_theme = getattr(self.cfg, "theme", "dark")
-        theme_value = self.cmb_theme.currentData()
-        if theme_value not in {"light", "dark", "custom"}:
-            theme_value = "dark"
-        self.cfg.theme = theme_value
-        if theme_value in {"light", "dark"} and theme_value != previous_theme:
-            self.cfg.reset_theme_colors(theme_value)
-        if theme_value == "custom":
-            self.cfg.theme_colors = dict(self.cfg.theme_palette_for("custom"))
+        
         self.cfg.tray_mode = bool(self.cb_tray_mode.isChecked())
         self.cfg.startup_enabled = bool(self.cb_startup.isChecked())
         self.cfg.min_free_percent = int(self.sb_min_free.value())
