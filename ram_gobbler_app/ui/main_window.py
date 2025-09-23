@@ -32,6 +32,7 @@ from ..platform import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPainter,
     QPixmap,
     QSplitter,
     QStackedWidget,
@@ -77,13 +78,205 @@ from metrics import Metrics
 _TOOLBAR_HEIGHT = 48
 _TOOLBAR_LOGO_PADDING = 0
 _TOOLBAR_LOGO_BORDER_RADIUS = _TOOLBAR_HEIGHT // 2
-# Bounding rectangle of the opaque pixels within the 1024x1024 RG logo asset.
-# Values are ``(left, top, right, bottom)`` with the right/bottom edges being
-# exclusive to match ``QPixmap.copy`` semantics.  Cropping to this window removes
-# the generous transparent matting around the artwork so the logo can render
-# as large as possible within the fixed-height toolbar label.
-_TOOLBAR_LOGO_BOUNDS = (200, 89, 824, 763)
+_TOOLBAR_LOGO_ALPHA_THRESHOLD = 8
+_TOOLBAR_LOGO_MARGIN = 8
 
+
+
+def _crop_logo_pixmap(pixmap: QPixmap) -> Optional[QPixmap]:
+    """Return ``pixmap`` cropped to the visible RG artwork."""
+
+    if not QT_AVAILABLE:
+        return None
+
+    to_image = getattr(pixmap, "toImage", None)
+    if not callable(to_image):
+        return None
+
+    try:
+        image = to_image()
+    except Exception:
+        return None
+
+    if image is None:
+        return None
+
+    if hasattr(image, "isNull"):
+        try:
+            if image.isNull():
+                return None
+        except Exception:
+            return None
+
+    if hasattr(image, "hasAlphaChannel"):
+        try:
+            if not image.hasAlphaChannel():
+                return None
+        except Exception:
+            return None
+
+    if hasattr(image, "width") and hasattr(image, "height"):
+        try:
+            width = int(image.width())
+            height = int(image.height())
+        except Exception:
+            return None
+    else:
+        return None
+
+    if width <= 0 or height <= 0:
+        return None
+
+    convert_to_format = getattr(image, "convertToFormat", None)
+    if callable(convert_to_format):
+        image_type = type(image)
+        format_rgba = getattr(image_type, "Format_RGBA8888", None)
+        format_argb32 = getattr(image_type, "Format_ARGB32", None)
+        target_format = format_rgba if format_rgba is not None else format_argb32
+        if target_format is not None:
+            try:
+                converted = convert_to_format(target_format)
+            except Exception:
+                converted = None
+            else:
+                if converted is not None and hasattr(converted, "isNull"):
+                    try:
+                        if not converted.isNull():
+                            image = converted
+                    except Exception:
+                        pass
+
+    color_getter = getattr(image, "pixelColor", None)
+    pixel_getter = getattr(image, "pixel", None)
+    if not callable(color_getter) and not callable(pixel_getter):
+        return None
+
+    left = width
+    top = height
+    right = -1
+    bottom = -1
+
+    for y in range(height):
+        for x in range(width):
+            try:
+                if callable(color_getter):
+                    color = color_getter(x, y)
+                    alpha = color.alpha() if hasattr(color, "alpha") else 0
+                else:
+                    pixel = pixel_getter(x, y)
+                    alpha = (int(pixel) >> 24) & 0xFF
+            except Exception:
+                continue
+
+            if alpha > _TOOLBAR_LOGO_ALPHA_THRESHOLD:
+                if x < left:
+                    left = x
+                if x > right:
+                    right = x
+                if y < top:
+                    top = y
+                if y > bottom:
+                    bottom = y
+
+    if right < left or bottom < top:
+        return None
+
+    if _TOOLBAR_LOGO_MARGIN:
+        left = max(0, left - _TOOLBAR_LOGO_MARGIN)
+        top = max(0, top - _TOOLBAR_LOGO_MARGIN)
+        right = min(width - 1, right + _TOOLBAR_LOGO_MARGIN)
+        bottom = min(height - 1, bottom + _TOOLBAR_LOGO_MARGIN)
+
+    crop_width = max(1, right - left + 1)
+    crop_height = max(1, bottom - top + 1)
+
+    copier = getattr(pixmap, "copy", None)
+    if not callable(copier):
+        return None
+
+    try:
+        return copier(left, top, crop_width, crop_height)
+    except Exception:
+        return None
+
+
+def _render_logo_pixmap(pixmap: QPixmap, target: int) -> Optional[QPixmap]:
+    """Scale ``pixmap`` into a centred square of ``target`` pixels."""
+
+    if not QT_AVAILABLE or target <= 0:
+        return None
+
+    scaler = getattr(pixmap, "scaled", None)
+    if callable(scaler):
+        try:
+            aspect = getattr(Qt, "KeepAspectRatio", 1)
+            smoothing = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
+            scaled = scaler(target, target, aspect, smoothing)
+        except Exception:
+            scaled = pixmap
+    else:
+        scaled = pixmap
+
+    if hasattr(scaled, "width") and hasattr(scaled, "height"):
+        try:
+            scaled_width = int(scaled.width())
+            scaled_height = int(scaled.height())
+        except Exception:
+            scaled_width = scaled_height = 0
+    else:
+        scaled_width = scaled_height = 0
+
+    try:
+        canvas = QPixmap(target, target)
+    except Exception:
+        return scaled if scaled_width and scaled_height else pixmap
+
+    fill_color = getattr(Qt, "transparent", 0)
+    if hasattr(canvas, "fill"):
+        try:
+            canvas.fill(fill_color)
+        except Exception:
+            pass
+
+    try:
+        painter = QPainter(canvas)
+    except Exception:
+        return scaled if scaled_width and scaled_height else pixmap
+
+    try:
+        set_hint = getattr(painter, "setRenderHint", None)
+        if callable(set_hint):
+            antialias = getattr(QPainter, "Antialiasing", None)
+            if antialias is not None:
+                try:
+                    set_hint(antialias, True)
+                except Exception:
+                    pass
+            smooth = getattr(QPainter, "SmoothPixmapTransform", None)
+            if smooth is not None:
+                try:
+                    set_hint(smooth, True)
+                except Exception:
+                    pass
+
+        if not scaled_width or not scaled_height:
+            try:
+                scaled_width = int(scaled.width())
+                scaled_height = int(scaled.height())
+            except Exception:
+                scaled_width = scaled_height = 0
+
+        offset_x = max(0, (target - scaled_width) // 2)
+        offset_y = max(0, (target - scaled_height) // 2)
+
+        painter.drawPixmap(offset_x, offset_y, scaled)
+    finally:
+        try:
+            painter.end()
+        except Exception:
+            pass
+
+    return canvas
 
 
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
@@ -596,44 +789,14 @@ class MainWindow(QMainWindow):
                     pass
             return
 
-        if hasattr(pixmap, "width") and hasattr(pixmap, "height"):
-            try:
-                width = int(pixmap.width())
-                height = int(pixmap.height())
-            except Exception:
-                width = height = 0
-        else:
-            width = height = 0
+        cropped = _crop_logo_pixmap(pixmap)
+        if cropped is not None:
+            pixmap = cropped
 
-        if width > 0 and height > 0 and hasattr(pixmap, "copy"):
-            left, top, right, bottom = _TOOLBAR_LOGO_BOUNDS
-            left = max(0, min(int(left), width))
-            top = max(0, min(int(top), height))
-            right = max(left, min(int(right), width))
-            bottom = max(top, min(int(bottom), height))
-            crop_width = max(0, right - left)
-            crop_height = max(0, bottom - top)
-
-            if crop_width and crop_height:
-                try:
-                    pixmap = pixmap.copy(left, top, crop_width, crop_height)
-                except Exception:
-                    pass
-
-        scaler = getattr(pixmap, "scaled", None)
-        if callable(scaler):
-            try:
-                keep = getattr(Qt, "KeepAspectRatio", 1)
-                transform = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
-                target = max(1, _TOOLBAR_HEIGHT - 2 * _TOOLBAR_LOGO_PADDING)
-                pixmap = scaler(
-                    target,
-                    target,
-                    keep,
-                    transform,
-                )
-            except Exception:
-                pass
+        target = max(1, _TOOLBAR_HEIGHT - 2 * _TOOLBAR_LOGO_PADDING)
+        rendered = _render_logo_pixmap(pixmap, target)
+        if rendered is not None:
+            pixmap = rendered
 
         if hasattr(label, "setPixmap"):
             try:
