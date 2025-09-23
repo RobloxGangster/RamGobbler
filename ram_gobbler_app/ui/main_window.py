@@ -604,14 +604,14 @@ class MainWindow(QMainWindow):
             width = height = 0
 
         if width > 0 and height > 0 and hasattr(pixmap, "copy"):
-            left, top, right, bottom = _TOOLBAR_LOGO_CONTENT_BOUNDS
+
             left = max(0, min(int(left), width))
             top = max(0, min(int(top), height))
             right = max(left, min(int(right), width))
             bottom = max(top, min(int(bottom), height))
             crop_width = max(0, right - left)
             crop_height = max(0, bottom - top)
-            
+
             if crop_width and crop_height:
                 try:
                     pixmap = pixmap.copy(left, top, crop_width, crop_height)
