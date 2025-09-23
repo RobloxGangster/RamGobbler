@@ -279,6 +279,57 @@ def _qt_size_policy_candidates(name: str) -> List[Any]:
     return candidates + numeric_candidates
 
 
+def _device_pixel_ratio(widget: Any) -> float:
+    """Return the device-pixel ratio for ``widget`` when available."""
+
+    if not QT_AVAILABLE or widget is None:
+        return 1.0
+
+    for attr in ("devicePixelRatioF", "devicePixelRatio"):
+        getter = getattr(widget, attr, None)
+        if callable(getter):
+            try:
+                ratio = float(getter())
+            except Exception:
+                continue
+            if ratio > 0.0:
+                return ratio
+
+    app = QApplication.instance()
+    if app is None:
+        return 1.0
+
+    try:
+        screen = None
+        screen_getter = getattr(widget, "screen", None)
+        if callable(screen_getter):
+            try:
+                screen = screen_getter()
+            except Exception:
+                screen = None
+        if screen is None:
+            primary = getattr(app, "primaryScreen", None)
+            if callable(primary):
+                try:
+                    screen = primary()
+                except Exception:
+                    screen = None
+        if screen is not None:
+            for attr in ("devicePixelRatioF", "devicePixelRatio"):
+                getter = getattr(screen, attr, None)
+                if callable(getter):
+                    try:
+                        ratio = float(getter())
+                    except Exception:
+                        continue
+                    if ratio > 0.0:
+                        return ratio
+    except Exception:
+        return 1.0
+
+    return 1.0
+
+
 def relative_luminance(color: str) -> float:
     """Return the W3C relative luminance for ``color``."""
 
@@ -697,11 +748,13 @@ class MainWindow(QMainWindow):
             smooth = _qt_enum_value(Qt, "SmoothTransformation", ("TransformationMode",))
             fast = _qt_enum_value(Qt, "FastTransformation", ("TransformationMode",))
             transform_mode = smooth or fast
+            ratio = max(1.0, _device_pixel_ratio(label))
+            target_px = max(1, int(round(44 * ratio)))
 
             scaled = False
             if aspect_ratio is not None and transform_mode is not None:
                 try:
-                    pixmap = scaler(44, 44, aspect_ratio, transform_mode)
+                    pixmap = scaler(target_px, target_px, aspect_ratio, transform_mode)
                     scaled = True
                 except TypeError:
                     pass
@@ -710,7 +763,7 @@ class MainWindow(QMainWindow):
 
             if not scaled and aspect_ratio is not None:
                 try:
-                    pixmap = scaler(44, 44, aspect_ratio)
+                    pixmap = scaler(target_px, target_px, aspect_ratio)
                     scaled = True
                 except TypeError:
                     pass
@@ -720,7 +773,7 @@ class MainWindow(QMainWindow):
             if not scaled:
                 keep_int = _qt_enum_to_int(aspect_ratio)
                 transform_int = _qt_enum_to_int(transform_mode)
-                args: List[Any] = [44, 44]
+                args: List[Any] = [target_px, target_px]
                 if keep_int is not None:
                     args.append(keep_int)
                     if transform_int is not None:
@@ -733,7 +786,13 @@ class MainWindow(QMainWindow):
 
             if not scaled:
                 try:
-                    pixmap = scaler(44, 44)
+                    pixmap = scaler(target_px, target_px)
+                except Exception:
+                    pass
+
+            if hasattr(pixmap, "setDevicePixelRatio"):
+                try:
+                    pixmap.setDevicePixelRatio(ratio)
                 except Exception:
                     pass
 
@@ -821,6 +880,7 @@ class MainWindow(QMainWindow):
                 _qt_enum_value(Qt, "WA_TranslucentBackground", ("WidgetAttribute",)),
                 _qt_enum_value(Qt, "WA_NoSystemBackground", ("WidgetAttribute",)),
                 _qt_enum_value(Qt, "WA_StyledBackground", ("WidgetAttribute",)),
+                _qt_enum_value(Qt, "WA_TransparentForMouseEvents", ("WidgetAttribute",)),
             ]
             for attribute in attributes:
                 if attribute is None:
