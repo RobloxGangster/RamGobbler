@@ -19,20 +19,6 @@ Windows memory gobbler with a clean, friendly UI.
 - Anti-thrash controls (cooldown timers and reset caps)
 - Headless CLI mode with gobble and metrics export options
 
-## Architecture
-
-- `ram_gobbler_app/core/` – immutable domain models, configuration
-  serialization, scheduling helpers and shared palette maths.
-- `ram_gobbler_app/services/` – process discovery, gobble execution,
-  scheduler orchestration and metrics persistence with debounced disk writes.
-- `ram_gobbler_app/ui/` – Qt presentation layer that listens to scheduler
-  events via thread-safe hooks and triggers manual actions.
-- `ram_gobbler_app/cli/` – command-line bootstrap shared by the GUI launcher
-  and the `--headless` mode.
-
-Process snapshots are cached once per tick to avoid repeated psutil scans and
-configuration mutations are validated through the new `ConfigRepository`.
-
 ## Requirements
 ```
 pip install -r requirements.txt
@@ -79,9 +65,3 @@ pyinstaller -F -w -n "RamGobbler" ram_gobbler.py
 
 ### Crash log
 If the app crashes on startup, a traceback is written to `%APPDATA%/RamGobbler/error.log`.
-
-## Development
-
-Run the automated tests with `pytest`. The Qt layer falls back to Python stubs
-so the suite runs in headless environments. The CLI and GUI share the same
-bootstrap sequence, ensuring both code paths are exercised in the tests.

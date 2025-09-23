@@ -2,12 +2,7 @@
 
 from dataclasses import dataclass
 import os
-from typing import Any, Dict, Callable, Protocol
-
-
-class TargetLike(Protocol):
-    key: str
-    match_by: str
+from typing import Any, Dict, Callable
 
 
 @dataclass
@@ -27,7 +22,7 @@ class TargetSpec:
     match_by: str  # 'name', 'path', 'cmdline', 'parent'
 
 
-def matches(info: Dict[str, Any], target: TargetLike) -> bool:
+def matches(info: Dict[str, Any], target: TargetSpec) -> bool:
     """Return ``True`` if ``info`` matches ``target``.
 
     Parameters
@@ -40,7 +35,7 @@ def matches(info: Dict[str, Any], target: TargetLike) -> bool:
 
     # Case-normalize the target once so individual strategies operate on a
     # consistent representation.
-    key = str(target.key).casefold()
+    key = target.key.casefold()
 
     def match_name() -> bool:
         """Case-insensitive equality on process name."""
@@ -79,5 +74,5 @@ def matches(info: Dict[str, Any], target: TargetLike) -> bool:
 
     # Retrieve and execute the desired strategy; fall back to ``False`` when
     # an unknown strategy is requested.
-    func = strategies.get(str(target.match_by))
+    func = strategies.get(target.match_by)
     return func() if func else False
