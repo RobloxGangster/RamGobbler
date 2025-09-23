@@ -1,4 +1,10 @@
-"""Command line entry point used by ``ram_gobbler.py``."""
+"""Command line interface for the Ram Gobbler desktop application.
+
+Historically the project exposed a large ``if __name__ == "__main__"`` block
+with ad-hoc argument handling.  The refactored structure routes all command
+line interactions through this module so both the GUI launcher and automated
+scripts share the same parsing logic.
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,20 +13,28 @@ import sys
 from typing import Sequence
 
 from .constants import CONFIG_PATH, LEGACY_PREFIX, METRICS_PATH
-from .core.config_repository import ConfigRepository
+from .models import Config
 from .platform import QApplication, QT_AVAILABLE
-from .services.metrics_service import MetricsService
-from .services.process_matcher import ProcessMatcher
-from .services.gobble_service import GobbleService
-from .services.scheduler_service import SchedulerService
 from .ui.main_window import MainWindow
+from metrics import Metrics
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments used by the small CLI interface.
+
+    The original tool accepted a handful of hidden ``--trim-*`` flags.  For
+    backwards compatibility we still recognise them and translate the values to
+    the new ``--gobble-*`` options.  ``argparse`` is deliberately configured with
+    ``add_help=True`` so casual users running the binary from a terminal receive
+    friendly usage information.
+    """
+
     legacy_visible_flag = f"--{LEGACY_PREFIX}-visible"
     legacy_group_flag = f"--{LEGACY_PREFIX}-group"
 
-    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv is None:
+        argv = sys.argv[1:]
+
     normalized: list[str] = []
     for arg in argv:
         if arg == legacy_visible_flag:
@@ -45,26 +59,39 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Main entry point used by ``ram_gobbler.py``.
+
+    The workflow is intentionally straightforward:
+
+    #. Parse command line arguments (supporting legacy aliases).
+    #. Load persisted configuration and metrics data.
+    #. Execute the requested mode: headless JSON output, metrics export or the
+       full Qt user interface.
+
+    Returning an integer exit status keeps the function friendly to both
+    ``sys.exit`` and unit tests.
+    """
+
     args = parse_args(argv)
 
-    config_repo = ConfigRepository(CONFIG_PATH)
-    config = config_repo.load()
-
-    metrics = MetricsService(METRICS_PATH)
+    # Configuration and metrics are plain JSON files stored under ``AppData`` on
+    # Windows.  Loading them up-front keeps the rest of the function focused on
+    # behaviour.
+    config = Config(CONFIG_PATH)
+    config.load()
+    metrics = Metrics(METRICS_PATH)
     metrics.load()
-
-    matcher = ProcessMatcher()
-    gobbler = GobbleService(matcher, metrics)
-    scheduler = SchedulerService(config_repo, matcher, gobbler)
 
     if args.headless:
         result = {"ok": True, "reclaimed_mb": 0.0, "gobbles": 0}
         if args.export_metrics:
             try:
-                metrics.flush()
                 with open(args.export_metrics, "w", encoding="utf-8") as handle:
                     handle.write(metrics.export_json(30))
             except Exception:
+                # Exporting metrics is an optional convenience feature.  If the
+                # user specifies an invalid path we simply ignore the failure and
+                # still return a successful headless result.
                 pass
         print(json.dumps(result))
         return 0
@@ -77,11 +104,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     app = QApplication(sys.argv)
-    win = MainWindow(config_repo, scheduler, metrics)
+    win = MainWindow(config)
     win.show()
-    scheduler.start()
     rc = app.exec()
-    scheduler.stop()
+    config.save()
     return rc
 
 
