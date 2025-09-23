@@ -72,10 +72,10 @@ from .components import (
 from .logo_asset import get_rg_logo_png_bytes
 from .qt_compat import (
     _device_pixel_ratio,
-    _qt_alignment_candidates,
+    _qt_apply_alignment,
     _qt_enum_to_int,
     _qt_enum_value,
-    _qt_size_policy_candidates,
+    _qt_set_size_policy,
     _qt_standard_icon,
 )
 from metrics import Metrics
@@ -412,12 +412,21 @@ class MainWindow(QMainWindow):
                 self.logo_label.setToolTip("RamGobbler")
             except Exception:
                 pass
-        for alignment in _qt_alignment_candidates("AlignRight", "AlignVCenter"):
-            try:
-                self.logo_label.setAlignment(alignment)
-                break
-            except Exception:
-                continue
+        if not _qt_apply_alignment(self.logo_label, "AlignRight", "AlignVCenter"):
+            setter = getattr(self.logo_label, "setAlignment", None)
+            if callable(setter):
+                fallback = 0
+                for name in ("AlignRight", "AlignVCenter"):
+                    value = getattr(Qt, name, None)
+                    numeric = _qt_enum_to_int(value)
+                    if numeric is not None:
+                        fallback |= numeric
+                if fallback == 0:
+                    fallback = 0x0082
+                try:
+                    setter(fallback)
+                except Exception:
+                    pass
         self._configure_logo_label()
         self._set_logo_pixmap()
         tb.addWidget(self.logo_label)
@@ -602,12 +611,16 @@ class MainWindow(QMainWindow):
 
         self._configure_logo_label()
 
-        if not QT_AVAILABLE:
-            if hasattr(label, "setText"):
+        def _fallback_to_text() -> None:
+            text_setter = getattr(label, "setText", None)
+            if callable(text_setter):
                 try:
-                    label.setText("RG")
+                    text_setter("RG")
                 except Exception:
                     pass
+
+        if not QT_AVAILABLE:
+            _fallback_to_text()
             return
 
         try:
@@ -617,20 +630,12 @@ class MainWindow(QMainWindow):
 
         data = get_rg_logo_png_bytes()
         if not data or pixmap is None:
-            if hasattr(label, "setText"):
-                try:
-                    label.setText("RG")
-                except Exception:
-                    pass
+            _fallback_to_text()
             return
 
         loader = getattr(pixmap, "loadFromData", None)
         if not callable(loader) or not loader(data):
-            if hasattr(label, "setText"):
-                try:
-                    label.setText("RG")
-                except Exception:
-                    pass
+            _fallback_to_text()
             return
 
         scaler = getattr(pixmap, "scaled", None)
@@ -690,16 +695,8 @@ class MainWindow(QMainWindow):
         if hasattr(label, "setPixmap"):
             try:
                 label.setPixmap(pixmap)
-                if hasattr(label, "setMinimumSize"):
-                    label.setMinimumSize(36, 36)
-                if hasattr(label, "setMaximumHeight"):
-                    label.setMaximumHeight(48)
             except Exception:
-                if hasattr(label, "setText"):
-                    try:
-                        label.setText("RG")
-                    except Exception:
-                        pass
+                _fallback_to_text()
 
     def _configure_logo_label(self) -> None:
         """Apply consistent styling and transparency to the logo label."""
@@ -708,31 +705,24 @@ class MainWindow(QMainWindow):
         if label is None:
             return
 
-        if hasattr(label, "setSizePolicy"):
-            fixed_candidates = _qt_size_policy_candidates("Fixed")
-            applied = False
-            for candidate in fixed_candidates:
+        if not _qt_set_size_policy(label, "Fixed"):
+            setter = getattr(label, "setFixedSize", None)
+            if callable(setter):
                 try:
-                    label.setSizePolicy(candidate, candidate)
-                    applied = True
-                    break
+                    setter(44, 44)
+                except Exception:
+                    pass
+
+        for name, args in (
+            ("setMinimumSize", (36, 36)),
+            ("setMaximumHeight", (48,)),
+        ):
+            size_setter = getattr(label, name, None)
+            if callable(size_setter):
+                try:
+                    size_setter(*args)
                 except Exception:
                     continue
-            if not applied and fixed_candidates:
-                numeric = _qt_enum_to_int(fixed_candidates[0])
-                if numeric is not None:
-                    try:
-                        label.setSizePolicy(numeric, numeric)
-                        applied = True
-                    except Exception:
-                        pass
-            if not applied:
-                setter = getattr(label, "setFixedSize", None)
-                if callable(setter):
-                    try:
-                        setter(44, 44)
-                    except Exception:
-                        pass
 
         stylesheet_bits = [
             "padding: 2px",

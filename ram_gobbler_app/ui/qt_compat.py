@@ -10,7 +10,9 @@ __all__ = [
     "_qt_enum_value",
     "_qt_enum_to_int",
     "_qt_alignment_candidates",
+    "_qt_apply_alignment",
     "_qt_size_policy_candidates",
+    "_qt_set_size_policy",
     "_qt_standard_icon",
     "_device_pixel_ratio",
 ]
@@ -116,6 +118,26 @@ def _qt_alignment_candidates(*names: str) -> List[Any]:
     return candidates
 
 
+def _qt_apply_alignment(widget: Any, *names: str) -> bool:
+    """Attempt to apply the named alignment flags to ``widget``."""
+
+    if widget is None:
+        return False
+
+    setter = getattr(widget, "setAlignment", None)
+    if not callable(setter):
+        return False
+
+    for candidate in _qt_alignment_candidates(*names):
+        try:
+            setter(candidate)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
 def _qt_size_policy_candidates(name: str) -> List[Any]:
     """Return best-effort candidates for ``QSizePolicy`` enums."""
 
@@ -132,6 +154,34 @@ def _qt_size_policy_candidates(name: str) -> List[Any]:
             numeric_candidates.append(numeric)
 
     return candidates + numeric_candidates
+
+
+def _qt_set_size_policy(widget: Any, horizontal: str, vertical: str | None = None) -> bool:
+    """Attempt to assign a Qt size policy to ``widget``."""
+
+    if widget is None:
+        return False
+
+    setter = getattr(widget, "setSizePolicy", None)
+    if not callable(setter):
+        return False
+
+    vertical_name = vertical if vertical is not None else horizontal
+    horizontal_candidates = _qt_size_policy_candidates(horizontal)
+    vertical_candidates = _qt_size_policy_candidates(vertical_name)
+
+    if not horizontal_candidates or not vertical_candidates:
+        return False
+
+    for horizontal_candidate in horizontal_candidates:
+        for vertical_candidate in vertical_candidates:
+            try:
+                setter(horizontal_candidate, vertical_candidate)
+                return True
+            except Exception:
+                continue
+
+    return False
 
 
 def _qt_standard_icon(widget: Any, name: str) -> Optional[Any]:
