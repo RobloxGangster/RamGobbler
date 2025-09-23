@@ -81,12 +81,7 @@ _TOOLBAR_LOGO_BORDER_RADIUS = _TOOLBAR_HEIGHT // 2
 # Values are ``(left, top, right, bottom)`` with the right/bottom edges being
 # exclusive to match ``QPixmap.copy`` semantics.  Cropping to this window removes
 # the generous transparent matting around the artwork so the logo can render
-# larger without altering the toolbar height.  We additionally shave a narrow
-# ring of pixels from this box to nudge the visible glyph larger while keeping
-# the toolbar itself the same height.
-_TOOLBAR_LOGO_CONTENT_BOUNDS = (200, 89, 824, 763)
-_TOOLBAR_LOGO_TRIM_X = 4
-_TOOLBAR_LOGO_TRIM_Y = 6
+
 
 
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
@@ -609,26 +604,14 @@ class MainWindow(QMainWindow):
             width = height = 0
 
         if width > 0 and height > 0 and hasattr(pixmap, "copy"):
-            try:
-                left, top, right, bottom = _TOOLBAR_LOGO_CONTENT_BOUNDS
-            except NameError:  # pragma: no cover - defensive fallback
-                left, top, right, bottom = 0, 0, width, height
+
             left = max(0, min(int(left), width))
             top = max(0, min(int(top), height))
             right = max(left, min(int(right), width))
             bottom = max(top, min(int(bottom), height))
             crop_width = max(0, right - left)
             crop_height = max(0, bottom - top)
-            trim_x = min(globals().get("_TOOLBAR_LOGO_TRIM_X", 0), crop_width // 2)
-            trim_y = min(globals().get("_TOOLBAR_LOGO_TRIM_Y", 0), crop_height // 2)
-            if trim_x:
-                left = min(left + trim_x, width)
-                right = max(left, right - trim_x)
-            if trim_y:
-                top = min(top + trim_y, height)
-                bottom = max(top, bottom - trim_y)
-            crop_width = max(0, right - left)
-            crop_height = max(0, bottom - top)
+
             if crop_width and crop_height:
                 try:
                     pixmap = pixmap.copy(left, top, crop_width, crop_height)
