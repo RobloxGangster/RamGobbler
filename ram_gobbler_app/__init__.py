@@ -1,29 +1,31 @@
-"""Public exports for the refactored Ram Gobbler package."""
+"""Convenience exports for the reorganised Ram Gobbler application.
+
+The legacy application exposed a large set of globals from ``ram_gobbler``
+itself.  External scripts – including some bundled test utilities – still
+import those names.  Re-exporting them from the package ``__init__`` keeps the
+public API stable while allowing the implementation to be split into focused
+modules.
+"""
 from __future__ import annotations
 
+from .app import main, parse_args
 from .constants import (
     APP_NAME,
     BACKUP_DIR,
     CONFIG_DIR,
     CONFIG_PATH,
     DEFAULT_INTERVAL,
+    MIN_INTERVAL,
     HELPER_PIPE,
     LEGACY_LAST_TS_KEY,
     LEGACY_PREFIX,
     LEGACY_REASON_KEY,
     LEGACY_WAKE_KEY,
     METRICS_PATH,
-    MIN_INTERVAL,
 )
-from .app import main, parse_args
-from .core.config_repository import ConfigRepository
-from .core.models import AppConfig, GroupConfig, TargetConfig
-from .core.schedule import gate_reason, jittered_interval, schedule_allows_now, window_active
-from .core.palette import blend_colors, darken_color, lighten_color, normalize_color
-from .services.metrics_service import MetricsService
-from .services.process_matcher import ProcessMatcher, ProcessNode
-from .services.gobble_service import GobbleService
-from .services.scheduler_service import SchedulerService
+from .gobbler import Gobbler
+from .models import Config, Group, Target
+from .processes import estimate_reclaim
 
 __all__ = [
     "APP_NAME",
@@ -38,23 +40,11 @@ __all__ = [
     "LEGACY_REASON_KEY",
     "LEGACY_WAKE_KEY",
     "METRICS_PATH",
-    "AppConfig",
-    "GroupConfig",
-    "TargetConfig",
-    "ConfigRepository",
-    "MetricsService",
-    "ProcessMatcher",
-    "ProcessNode",
-    "GobbleService",
-    "SchedulerService",
-    "gate_reason",
-    "jittered_interval",
-    "schedule_allows_now",
-    "window_active",
-    "blend_colors",
-    "darken_color",
-    "lighten_color",
-    "normalize_color",
+    "Config",
+    "Group",
+    "Target",
+    "Gobbler",
+    "estimate_reclaim",
     "parse_args",
     "main",
 ]
