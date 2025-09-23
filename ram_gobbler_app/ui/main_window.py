@@ -75,8 +75,18 @@ from metrics import Metrics
 
 
 _TOOLBAR_HEIGHT = 48
-_TOOLBAR_LOGO_DIMENSION = 96
+_TOOLBAR_LOGO_PADDING = 0
 _TOOLBAR_LOGO_BORDER_RADIUS = _TOOLBAR_HEIGHT // 2
+# Bounding rectangle of the opaque pixels within the 1024x1024 RG logo asset.
+# Values are ``(left, top, right, bottom)`` with the right/bottom edges being
+# exclusive to match ``QPixmap.copy`` semantics.  Cropping to this window removes
+# the generous transparent matting around the artwork so the logo can render
+# larger without altering the toolbar height.  We additionally shave a narrow
+# ring of pixels from this box to nudge the visible glyph larger while keeping
+# the toolbar itself the same height.
+_TOOLBAR_LOGO_CONTENT_BOUNDS = (200, 89, 824, 763)
+_TOOLBAR_LOGO_TRIM_X = 4
+_TOOLBAR_LOGO_TRIM_Y = 6
 
 
 def _parse_hex(color: str) -> tuple[str, tuple[int, int, int]]:
@@ -418,7 +428,7 @@ class MainWindow(QMainWindow):
         if hasattr(self.logo_label, "setStyleSheet"):
             try:
                 self.logo_label.setStyleSheet(
-                    f"padding: 2px; border-radius: {_TOOLBAR_LOGO_BORDER_RADIUS}px;"
+                    f"padding: {_TOOLBAR_LOGO_PADDING}px; border-radius: {_TOOLBAR_LOGO_BORDER_RADIUS}px;"
                 )
             except Exception:
                 pass
@@ -589,14 +599,69 @@ class MainWindow(QMainWindow):
                     pass
             return
 
+        if hasattr(pixmap, "width") and hasattr(pixmap, "height"):
+            try:
+                width = int(pixmap.width())
+                height = int(pixmap.height())
+            except Exception:
+                width = height = 0
+        else:
+            width = height = 0
+
+        if width > 0 and height > 0 and hasattr(pixmap, "copy"):
+            bounds = globals().get("_TOOLBAR_LOGO_CONTENT_BOUNDS")
+            if isinstance(bounds, (tuple, list)) and len(bounds) == 4:
+                try:
+                    left, top, right, bottom = (int(bounds[0]), int(bounds[1]), int(bounds[2]), int(bounds[3]))
+                except Exception:  # pragma: no cover - defensive
+                    left, top, right, bottom = 0, 0, width, height
+            else:  # pragma: no cover - defensive fallback
+                left, top, right, bottom = 0, 0, width, height
+
+            left = max(0, min(left, width))
+            top = max(0, min(top, height))
+            right = max(left, min(right, width))
+            bottom = max(top, min(bottom, height))
+            crop_width = max(0, right - left)
+            crop_height = max(0, bottom - top)
+
+            raw_trim_x = globals().get("_TOOLBAR_LOGO_TRIM_X", 0)
+            raw_trim_y = globals().get("_TOOLBAR_LOGO_TRIM_Y", 0)
+            try:
+                trim_x = max(0, int(raw_trim_x))
+            except Exception:  # pragma: no cover - defensive
+                trim_x = 0
+            try:
+                trim_y = max(0, int(raw_trim_y))
+            except Exception:  # pragma: no cover - defensive
+                trim_y = 0
+            trim_x = min(trim_x, crop_width // 2)
+            trim_y = min(trim_y, crop_height // 2)
+
+            if trim_x:
+                left = min(left + trim_x, width)
+                right = max(left, right - trim_x)
+            if trim_y:
+                top = min(top + trim_y, height)
+                bottom = max(top, bottom - trim_y)
+            crop_width = max(0, right - left)
+            crop_height = max(0, bottom - top)
+
+            if crop_width and crop_height:
+                try:
+                    pixmap = pixmap.copy(left, top, crop_width, crop_height)
+                except Exception:
+                    pass
+
         scaler = getattr(pixmap, "scaled", None)
         if callable(scaler):
             try:
                 keep = getattr(Qt, "KeepAspectRatio", 1)
                 transform = getattr(Qt, "SmoothTransformation", getattr(Qt, "FastTransformation", 0))
+                target = max(1, _TOOLBAR_HEIGHT - 2 * _TOOLBAR_LOGO_PADDING)
                 pixmap = scaler(
-                    _TOOLBAR_LOGO_DIMENSION,
-                    _TOOLBAR_LOGO_DIMENSION,
+                    target,
+                    target,
                     keep,
                     transform,
                 )
