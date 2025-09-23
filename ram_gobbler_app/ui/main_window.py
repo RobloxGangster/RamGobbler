@@ -81,6 +81,8 @@ _TOOLBAR_LOGO_BORDER_RADIUS = _TOOLBAR_HEIGHT // 2
 # Values are ``(left, top, right, bottom)`` with the right/bottom edges being
 # exclusive to match ``QPixmap.copy`` semantics.  Cropping to this window removes
 # the generous transparent matting around the artwork so the logo can render
+# as large as possible within the fixed-height toolbar label.
+_TOOLBAR_LOGO_BOUNDS = (200, 89, 824, 763)
 
 
 
@@ -604,7 +606,7 @@ class MainWindow(QMainWindow):
             width = height = 0
 
         if width > 0 and height > 0 and hasattr(pixmap, "copy"):
-
+            left, top, right, bottom = _TOOLBAR_LOGO_BOUNDS
             left = max(0, min(int(left), width))
             top = max(0, min(int(top), height))
             right = max(left, min(int(right), width))
