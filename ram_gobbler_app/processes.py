@@ -39,6 +39,68 @@ class ProcessNode:
             yield from child.walk()
 
 
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    """Immutable collection of lightweight process descriptors."""
+
+    processes: Tuple[Tuple[psutil.Process, Dict[str, object], str], ...] = tuple()
+
+    def __iter__(self):  # pragma: no cover - trivial wrapper
+        return iter(self.processes)
+
+
+def snapshot_processes(
+    *, include_exe: bool = False, include_cmdline: bool = False, include_parent: bool = False
+) -> ProcessSnapshot:
+    """Return a cached-friendly snapshot of running processes."""
+
+    attrs = ["pid", "name"]
+    if include_exe:
+        attrs.append("exe")
+    if include_cmdline:
+        attrs.append("cmdline")
+    if include_parent:
+        attrs.append("ppid")
+
+    try:
+        iterator = psutil.process_iter(attrs=attrs)
+    except Exception:
+        return ProcessSnapshot()
+
+    records: List[Tuple[psutil.Process, Dict[str, object]]] = []
+    name_cache: Dict[int, str] = {}
+
+    for proc in iterator:
+        try:
+            info = proc.info
+            records.append((proc, info))
+            name_cache[proc.pid] = str(info.get("name") or "")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    parent_cache: Dict[int, str] = {}
+    prepared: List[Tuple[psutil.Process, Dict[str, object], str]] = []
+
+    for proc, info in records:
+        parent_name = ""
+        if include_parent:
+            parent_raw = info.get("ppid")
+            parent_pid = parent_raw if isinstance(parent_raw, int) else None
+            if parent_pid:
+                parent_name = name_cache.get(parent_pid, "")
+                if not parent_name:
+                    parent_name = parent_cache.get(parent_pid, "")
+                    if not parent_name:
+                        try:
+                            parent_name = psutil.Process(parent_pid).name()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            parent_name = ""
+                        parent_cache[parent_pid] = parent_name or ""
+        prepared.append((proc, info, parent_name or ""))
+
+    return ProcessSnapshot(tuple(prepared))
+
+
 def build_process_tree(include_system: bool) -> List[ProcessNode]:
     """Return a parent/child tree of running processes.
 
@@ -121,53 +183,21 @@ def list_processes(include_system: bool) -> List[psutil.Process]:
     return processes
 
 
-def match_pids(target: Target) -> List[int]:
+def match_pids(target: Target, snapshot: Optional[ProcessSnapshot] = None) -> List[int]:
     """Return process identifiers matching ``target``'s selection rules."""
 
     # ``dict`` used as an ordered set so repeated matches collapse naturally.
     pids: Dict[int, None] = {}
 
-    try:
-        iterator = psutil.process_iter(
-            attrs=["pid", "name", "exe", "cmdline", "ppid"]
+    if snapshot is None:
+        snapshot = snapshot_processes(
+            include_exe=target.match_by == "path",
+            include_cmdline=target.match_by == "cmdline",
+            include_parent=target.match_by == "parent",
         )
-    except Exception:
-        iterator = []  # pragma: no cover - defensive fallback
 
-    # Cache basic metadata so that expensive ``psutil.Process`` lookups are
-    # avoided when resolving parent names.  Building the cache up-front keeps
-    # the matching loop lean and drastically reduces the number of system calls
-    # performed when many processes share the same parent.
-    processes: List[Tuple[psutil.Process, Dict[str, object]]] = []
-    name_cache: Dict[int, str] = {}
-
-    for proc in iterator:
+    for proc, info, parent_name in snapshot:
         try:
-            info = proc.info
-            processes.append((proc, info))
-            name_cache[proc.pid] = str(info.get("name") or "")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
-    parent_cache: Dict[int, str] = {}
-
-    for proc, info in processes:
-        try:
-            parent_name = ""
-            parent_raw = info.get("ppid")
-            parent_pid = parent_raw if isinstance(parent_raw, int) else None
-            if parent_pid:
-                cached = parent_cache.get(parent_pid)
-                if cached is None:
-                    cached = name_cache.get(parent_pid, "")
-                    if not cached:
-                        try:
-                            cached = psutil.Process(parent_pid).name()
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            cached = ""
-                    parent_cache[parent_pid] = cached or ""
-                parent_name = cached
-
             info_payload = {
                 "name": info.get("name"),
                 "exe": info.get("exe"),
@@ -205,5 +235,7 @@ __all__ = [
     "build_process_tree",
     "list_processes",
     "match_pids",
+    "ProcessSnapshot",
+    "snapshot_processes",
     "estimate_reclaim",
 ]
