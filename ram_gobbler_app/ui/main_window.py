@@ -577,21 +577,44 @@ class MainWindow(QMainWindow):
             self._schedule_splitter_alignment_retry()
             return
 
-        try:
-            left_point = view_button.mapToGlobal(left_rect.topRight())
-            right_point = settings_button.mapToGlobal(right_rect.topLeft())
-        except Exception:
-            self._schedule_splitter_alignment_retry()
-            return
-        if left_point is None or right_point is None:
-            self._schedule_splitter_alignment_retry()
-            return
-        if not hasattr(left_point, "x") or not hasattr(right_point, "x"):
-            return
+        target_x = None
 
-        try:
-            target_x = (float(left_point.x()) + float(right_point.x())) / 2.0
-        except Exception:
+        center_point = None
+        if hasattr(right_rect, "center"):
+            try:
+                center_point = right_rect.center()
+            except Exception:
+                center_point = None
+        if center_point is not None:
+            try:
+                center_global = settings_button.mapToGlobal(center_point)
+            except Exception:
+                center_global = None
+            if center_global is not None and hasattr(center_global, "x"):
+                try:
+                    target_x = float(center_global.x())
+                except Exception:
+                    target_x = None
+
+        if target_x is None:
+            try:
+                left_point = view_button.mapToGlobal(left_rect.topRight())
+                right_point = settings_button.mapToGlobal(right_rect.topLeft())
+            except Exception:
+                self._schedule_splitter_alignment_retry()
+                return
+            if left_point is None or right_point is None:
+                self._schedule_splitter_alignment_retry()
+                return
+            if not hasattr(left_point, "x") or not hasattr(right_point, "x"):
+                return
+
+            try:
+                target_x = (float(left_point.x()) + float(right_point.x())) / 2.0
+            except Exception:
+                self._schedule_splitter_alignment_retry()
+                return
+        if target_x is None:
             self._schedule_splitter_alignment_retry()
             return
         if not hasattr(splitter, "mapToGlobal"):
