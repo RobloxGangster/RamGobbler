@@ -3,8 +3,8 @@
 import hashlib
 import ctypes
 import os
-import time
 from datetime import datetime
+from functools import lru_cache
 from typing import Dict, Optional
 
 from ram_gobbler_app.constants import MIN_INTERVAL
@@ -92,6 +92,13 @@ def window_active(
     return _within_window(window, now or datetime.now())
 
 
+@lru_cache(maxsize=1024)
+def _jitter_span(key: str) -> float:
+    """Return a stable pseudo-random span in ``[0, 1]`` for ``key``."""
+
+    return int(hashlib.sha1(key.encode()).hexdigest(), 16) % 10001 / 10000.0
+
+
 def jittered_interval(interval: float, key: str, pct: int) -> float:
     """Deterministically jitter ``interval`` by ``pct`` percent.
 
@@ -109,8 +116,7 @@ def jittered_interval(interval: float, key: str, pct: int) -> float:
         return max(MIN_INTERVAL, float(interval))
 
     # Derive a deterministic offset from the provided key.
-    h = int(hashlib.sha1(key.encode()).hexdigest(), 16)
-    span = h % 10001 / 10000.0  # Stable pseudo-random value in [0, 1].
+    span = _jitter_span(key)
     offset = (span * 2.0 - 1.0) * rng
 
     # Ensure the final interval stays above the supported minimum.

@@ -9,7 +9,7 @@ easily.
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict
 
 LEGACY_PREFIX = "t" + "rim"
@@ -90,8 +90,11 @@ class Metrics:
             "by_reason": {},
         }
         for date_str, r in self.rollups.items():
-            date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            if date < cutoff:
+            try:
+                parsed = date.fromisoformat(date_str)
+            except ValueError:
+                continue
+            if parsed < cutoff:
                 continue
             agg["gobbles"] += r.get("gobbles", r.get(LEGACY_COUNT_KEY, 0))
             agg["reclaimed_mb"] += r.get("reclaimed_mb", 0.0)

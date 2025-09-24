@@ -19,7 +19,7 @@ from .helpers import (
     rss_mb,
 )
 from .models import Config, Target
-from .processes import match_pids
+from .processes import ProcessSnapshot, match_pids, snapshot_processes
 from scheduler import gate_reason, jittered_interval, user_idle_seconds, window_active
 from .system import is_system_process
 
@@ -51,11 +51,13 @@ class Gobbler(threading.Thread):
         self._reset_times: Dict[str, Deque[float]] = {}
         self._manual_requests: Deque[int] = deque()
         self._forced_uids: Set[str] = set()
+        self._wake = threading.Event()
 
     def stop(self) -> None:
         """Signal the thread to terminate and persist metrics."""
 
         self._stop.set()
+        self._wake.set()
         try:
             self.metrics.save()
         except Exception:
@@ -141,6 +143,22 @@ class Gobbler(threading.Thread):
             batt_factor = self.config.battery_slow_factor if (self.config.battery_mode == "slow" and batt_on) else 1.0
             foreground_pid = get_foreground_pid()
 
+            active_targets = [t for t in targets_snapshot if t.active]
+            needs_cmdline = any(t.match_by == "cmdline" for t in active_targets)
+            needs_path = any(t.match_by == "path" for t in active_targets)
+            needs_parent = any(t.match_by == "parent" for t in active_targets)
+            snapshot: Optional[ProcessSnapshot] = None
+
+            def ensure_snapshot() -> ProcessSnapshot:
+                nonlocal snapshot
+                if snapshot is None:
+                    snapshot = snapshot_processes(
+                        include_cmdline=needs_cmdline,
+                        include_exe=needs_path,
+                        include_parent=needs_parent,
+                    )
+                return snapshot
+
             for index, target in enumerate(targets_snapshot):
                 if not target.active:
                     continue
@@ -185,7 +203,7 @@ class Gobbler(threading.Thread):
                     self._record_event(index, {"ts": now_ts, "type": "skip", "reason": reason})
                     continue
                 if target.background_only:
-                    matched_pids = match_pids(target)
+                    matched_pids = match_pids(target, ensure_snapshot())
                     if foreground_pid in matched_pids:
                         reason = "foreground"
                         self.on_result(index, reason)
@@ -197,7 +215,7 @@ class Gobbler(threading.Thread):
                         continue
                 if target.cpu_skip_threshold > 0:
                     if matched_pids is None:
-                        matched_pids = match_pids(target)
+                        matched_pids = match_pids(target, ensure_snapshot())
                     skip = False
                     for pid in matched_pids:
                         try:
@@ -217,7 +235,7 @@ class Gobbler(threading.Thread):
                     self.on_result(index, "idle")
                     continue
                 if matched_pids is None:
-                    matched_pids = match_pids(target)
+                    matched_pids = match_pids(target, ensure_snapshot())
                 self._perform_gobble(index, target, gobble_reason, pids=matched_pids)
             if time.time() - self._last_flush > 10:
                 try:
@@ -225,7 +243,12 @@ class Gobbler(threading.Thread):
                 except Exception:
                     pass
                 self._last_flush = time.time()
-            time.sleep(1)
+            timeout = self._compute_wait_timeout()
+            if timeout <= 0:
+                self._wake.clear()
+                continue
+            self._wake.wait(timeout)
+            self._wake.clear()
 
     def set_active(self, index: int, active: bool) -> None:
         """Toggle whether a target participates in the gobbler loop."""
@@ -241,6 +264,7 @@ class Gobbler(threading.Thread):
                         self._forced_uids.discard(uid)
                     self.config.targets[index].last_result = "Stopped"
                 self.config.save()
+        self._wake.set()
 
     def trigger_now(self, index: int, *, ensure_active: bool = True, continuous: bool = False) -> None:
         """Queue an immediate gobble for the specified target."""
@@ -255,6 +279,7 @@ class Gobbler(threading.Thread):
                     if uid:
                         self._forced_uids.add(uid)
                 self._manual_requests.append(index)
+                self._wake.set()
 
     def set_interval(self, index: int, seconds: float) -> None:
         """Change the per-target polling interval."""
@@ -263,6 +288,7 @@ class Gobbler(threading.Thread):
             if 0 <= index < len(self.config.targets):
                 self.config.targets[index].interval_sec = max(MIN_INTERVAL, float(seconds))
                 self.config.save()
+        self._wake.set()
 
     def set_autostart(self, index: int, value: bool) -> None:
         """Enable or disable auto-start for the selected target."""
@@ -271,6 +297,7 @@ class Gobbler(threading.Thread):
             if 0 <= index < len(self.config.targets):
                 self.config.targets[index].autostart = bool(value)
                 self.config.save()
+        self._wake.set()
 
     def set_group(self, index: int, group_id: str) -> None:
         """Assign the target to the specified group."""
@@ -279,6 +306,7 @@ class Gobbler(threading.Thread):
             if 0 <= index < len(self.config.targets):
                 self.config.targets[index].group_id = group_id or ""
                 self.config.save()
+        self._wake.set()
 
     def update_target(self, index: int, new_target: Target) -> None:
         """Replace a target with ``new_target``."""
@@ -287,6 +315,7 @@ class Gobbler(threading.Thread):
             if 0 <= index < len(self.config.targets):
                 self.config.targets[index] = new_target
                 self.config.save()
+        self._wake.set()
 
     def remove_target(self, index: int) -> None:
         """Delete the target at ``index`` from the configuration."""
@@ -298,6 +327,7 @@ class Gobbler(threading.Thread):
                     self._forced_uids.discard(uid)
                 self.config.targets.pop(index)
                 self.config.save()
+        self._wake.set()
 
     def _process_manual_request(self, index: int) -> None:
         """Handle manually queued gobbles triggered from the UI."""
@@ -306,7 +336,13 @@ class Gobbler(threading.Thread):
             if not (0 <= index < len(self.config.targets)):
                 return
             target = self.config.targets[index]
-        self._perform_gobble(index, target, "manual")
+        snapshot = snapshot_processes(
+            include_cmdline=target.match_by == "cmdline",
+            include_exe=target.match_by == "path",
+            include_parent=target.match_by == "parent",
+        )
+        pids = match_pids(target, snapshot)
+        self._perform_gobble(index, target, "manual", pids=pids)
 
     def _is_active(self, index: int) -> bool:
         """Check whether a target remains active."""
@@ -415,6 +451,35 @@ class Gobbler(threading.Thread):
         self.on_result(index, message)
         if total_delta > 0:
             self.on_delta(total_delta)
+
+    def _compute_wait_timeout(self) -> float:
+        """Return the next sleep interval for the worker loop."""
+
+        with self._lock:
+            snapshots: List[Tuple[float, float, float]] = [
+                (
+                    max(MIN_INTERVAL, float(t.interval_sec)),
+                    float(t.last_gobble_ts),
+                    float(getattr(t, "next_allowed_ts", 0.0)),
+                )
+                for t in self.config.targets
+                if t.active
+            ]
+        if not snapshots:
+            return 1.0
+
+        now = time.time()
+        wait = 1.0
+        for interval, last_ts, next_allowed in snapshots:
+            elapsed = now - last_ts
+            interval_remaining = interval - elapsed
+            cooldown_remaining = max(0.0, next_allowed - now)
+            candidate = max(interval_remaining, cooldown_remaining)
+            if candidate <= 0:
+                candidate = min(interval, 1.0)
+            if candidate < wait:
+                wait = candidate
+        return max(0.05, min(1.0, wait))
 
 
 __all__ = ["Gobbler"]
