@@ -1804,7 +1804,6 @@ class IntervalEditor(QWidget):
             self.line_edit.editingFinished.connect(self._on_edit_finished)
 
         self._apply_button_styles()
-        self._apply_line_edit_styles()
         self._update_display()
 
     @classmethod
@@ -2080,50 +2079,6 @@ class IntervalEditor(QWidget):
                     glyph_setter(active=palette.get("text"), disabled=palette.get("disabled_text"))
                 except Exception:  # pragma: no cover - defensive
                     pass
-
-        self._apply_line_edit_styles()
-
-    def _apply_line_edit_styles(self) -> None:
-        """Ensure the interval display matches the themed accent colours."""
-
-        line_edit = getattr(self, "line_edit", None)
-        if line_edit is None:
-            return
-
-        palette = dict(IntervalEditor._default_palette)
-        button_palette = getattr(self, "_button_palette", None)
-        if isinstance(button_palette, dict):
-            for key, value in button_palette.items():
-                if isinstance(value, str) and value.strip():
-                    palette[key] = value.strip()
-
-        border_color = palette.get("text", "#000000")
-        hover_color = palette.get("hover", border_color)
-        focus_color = palette.get("pressed", border_color)
-        disabled_color = palette.get("disabled_text", "#6B6B6B")
-
-        stylesheet = (
-            "QLineEdit {"
-            f"border: 2px solid {border_color};"
-            "border-radius: 10px;"
-            "}"
-            "QLineEdit:hover {"
-            f"border-color: {hover_color};"
-            "}"
-            "QLineEdit:focus {"
-            f"border-color: {focus_color};"
-            "}"
-            "QLineEdit:disabled {"
-            f"border-color: {disabled_color};"
-            "}"
-        )
-
-        setter = getattr(line_edit, "setStyleSheet", None)
-        if callable(setter):
-            try:
-                setter(stylesheet)
-            except Exception:  # pragma: no cover - defensive
-                pass
 
 
 class TargetStatsDialog(QDialog):
