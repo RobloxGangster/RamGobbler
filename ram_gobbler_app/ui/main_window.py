@@ -328,6 +328,8 @@ class MainWindow(QMainWindow):
         tb = QToolBar()
         self._toolbar = tb
         tb.setIconSize(QSize(18, 18))
+        if hasattr(tb, "setContextMenuPolicy") and hasattr(Qt, "PreventContextMenu"):
+            tb.setContextMenuPolicy(Qt.PreventContextMenu)
         self.addToolBar(tb)
         if hasattr(tb, "setContentsMargins"):
             tb.setContentsMargins(6, 4, 6, 4)
