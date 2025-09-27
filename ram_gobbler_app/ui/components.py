@@ -2107,9 +2107,7 @@ class IntervalEditor(QWidget):
         stylesheet = (
             "QLineEdit {"
             f"border: 1px solid {border_color};"
-            "border-radius: 6px;"
-            "padding: 1px 6px;"
-            "min-height: 24px;"
+
             "}"
             "QLineEdit:hover {"
             f"border-color: {hover_color};"
