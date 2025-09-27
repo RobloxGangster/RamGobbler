@@ -2099,15 +2099,21 @@ class IntervalEditor(QWidget):
                 if isinstance(value, str) and value.strip():
                     palette[key] = value.strip()
 
-        border_color = palette.get("text", "#000000")
+        text_color = palette.get("text", "#000000")
+        border_color = text_color
         hover_color = palette.get("hover", border_color)
         focus_color = palette.get("pressed", border_color)
         disabled_color = palette.get("disabled_text", "#6B6B6B")
 
+        padding = "2px 8px"
+        border_radius = "12px"
+
         stylesheet = (
             "QLineEdit {"
             f"border: 1px solid {border_color};"
-
+            f"border-radius: {border_radius};"
+            f"color: {text_color};"
+            f"padding: {padding};"
             "}"
             "QLineEdit:hover {"
             f"border-color: {hover_color};"
@@ -2117,6 +2123,7 @@ class IntervalEditor(QWidget):
             "}"
             "QLineEdit:disabled {"
             f"border-color: {disabled_color};"
+            f"color: {disabled_color};"
             "}"
         )
 
