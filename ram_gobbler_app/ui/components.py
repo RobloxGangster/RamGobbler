@@ -1623,35 +1623,6 @@ class _IntervalStepButton(QPushButton):
                             set_color(fallback)
                         except Exception:  # pragma: no cover - defensive
                             pass
-
-            set_width_f = getattr(pen, "setWidthF", None)
-            if callable(set_width_f):
-                try:
-                    set_width_f(2.4)
-                except Exception:  # pragma: no cover - defensive
-                    pass
-            else:
-                set_width = getattr(pen, "setWidth", None)
-                if callable(set_width):
-                    try:
-                        set_width(2)
-                    except Exception:  # pragma: no cover - defensive
-                        pass
-            set_cap_style = getattr(pen, "setCapStyle", None)
-            round_cap = getattr(Qt, "RoundCap", None)
-            if callable(set_cap_style) and round_cap is not None:
-                try:
-                    set_cap_style(round_cap)
-                except Exception:  # pragma: no cover - defensive
-                    pass
-            set_join_style = getattr(pen, "setJoinStyle", None)
-            round_join = getattr(Qt, "RoundJoin", None)
-            if callable(set_join_style) and round_join is not None:
-                try:
-                    set_join_style(round_join)
-                except Exception:  # pragma: no cover - defensive
-                    pass
-
             set_pen = getattr(painter, "setPen", None)
             if callable(set_pen):
                 try:
@@ -1659,28 +1630,62 @@ class _IntervalStepButton(QPushButton):
                 except Exception:  # pragma: no cover - defensive
                     pass
 
-            rect_getter = getattr(self, "rect", None)
-            if callable(rect_getter):
-                rect = rect_getter()
-                inner = rect.adjusted(2, 2, -2, -2)
-                center = inner.center()
-                horizontal_margin = max(4, inner.width() // 4)
-                vertical_margin = max(4, inner.height() // 4)
-
-                draw_line = getattr(painter, "drawLine", None)
-                if callable(draw_line):
+            font_getter = getattr(painter, "font", None)
+            font = font_getter() if callable(font_getter) else None
+            if font is not None:
+                set_bold = getattr(font, "setBold", None)
+                if callable(set_bold):
                     try:
-                        mid_y = center.y()
-                        left_x = inner.left() + horizontal_margin
-                        right_x = inner.right() - horizontal_margin
-                        draw_line(left_x, mid_y, right_x, mid_y)
-                        if self._symbol == "+":
-                            mid_x = center.x()
-                            top_y = inner.top() + vertical_margin
-                            bottom_y = inner.bottom() - vertical_margin
-                            draw_line(mid_x, top_y, mid_x, bottom_y)
+                        set_bold(True)
                     except Exception:  # pragma: no cover - defensive
                         pass
+                size = 0
+                point_size = getattr(font, "pointSize", None)
+                if callable(point_size):
+                    try:
+                        size = point_size()
+                    except Exception:  # pragma: no cover - defensive
+                        size = 0
+                if size <= 0:
+                    point_size_f = getattr(font, "pointSizeF", None)
+                    if callable(point_size_f):
+                        try:
+                            size = int(point_size_f())
+                        except Exception:  # pragma: no cover - defensive
+                            size = 0
+                target_size = 14 if size <= 0 else max(size, 14)
+                set_point = getattr(font, "setPointSize", None)
+                if callable(set_point):
+                    try:
+                        set_point(target_size)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                else:
+                    set_pointf = getattr(font, "setPointSizeF", None)
+                    if callable(set_pointf):
+                        try:
+                            set_pointf(float(target_size))
+                        except Exception:  # pragma: no cover - defensive
+                            pass
+                set_font = getattr(painter, "setFont", None)
+                if callable(set_font):
+                    try:
+                        set_font(font)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+
+            rect_getter = getattr(self, "rect", None)
+            draw_text = getattr(painter, "drawText", None)
+            if callable(draw_text) and callable(rect_getter):
+                rect = rect_getter()
+                align = getattr(Qt, "AlignCenter", None)
+                try:
+                    if align is None:
+                        draw_text(rect, self._symbol)
+                    else:
+                        draw_text(rect, align, self._symbol)
+                except Exception:  # pragma: no cover - defensive
+                    pass
         finally:
             end = getattr(painter, "end", None)
             if callable(end):
