@@ -1676,10 +1676,47 @@ class _IntervalStepButton(QPushButton):
 
             rect_getter = getattr(self, "rect", None)
             draw_text = getattr(painter, "drawText", None)
-            if callable(draw_text) and callable(rect_getter):
+            metrics_getter = getattr(painter, "fontMetrics", None)
+            if (
+                callable(draw_text)
+                and callable(rect_getter)
+                and callable(metrics_getter)
+            ):
                 rect = rect_getter()
-                align = getattr(Qt, "AlignCenter", None)
+                metrics = metrics_getter()
+                center = rect.center()
                 try:
+                    advance = 0
+                    horiz_adv = getattr(metrics, "horizontalAdvance", None)
+                    if callable(horiz_adv):
+                        advance = float(horiz_adv(self._symbol))
+                    else:
+                        width_fn = getattr(metrics, "width", None)
+                        if callable(width_fn):
+                            advance = float(width_fn(self._symbol))
+                    if advance <= 0:
+                        advance = float(rect.width()) * 0.4
+
+                    ascent = float(getattr(metrics, "ascent", lambda: 0)())
+                    descent = float(getattr(metrics, "descent", lambda: 0)())
+                    
+                    baseline = center.y() + (ascent - descent) / 2.0
+                    x_pos = center.x() - advance / 2.0
+
+                    draw_text(int(round(x_pos)), int(round(baseline)), self._symbol)
+                except Exception:  # pragma: no cover - defensive
+                    try:
+                        align = getattr(Qt, "AlignCenter", None)
+                        if align is None:
+                            draw_text(rect, self._symbol)
+                        else:
+                            draw_text(rect, align, self._symbol)
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+            elif callable(draw_text) and callable(rect_getter):
+                rect = rect_getter()
+                try:
+                    align = getattr(Qt, "AlignCenter", None)
                     if align is None:
                         draw_text(rect, self._symbol)
                     else:
