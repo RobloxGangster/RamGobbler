@@ -1731,6 +1731,7 @@ class IntervalEditor(QWidget):
         self._value = self._snap(self._clamp(value))
         base_palette = getattr(type(self), "_default_palette", {}) or {}
         self._button_palette = dict(base_palette)
+        self._button_palette.setdefault("_border_explicit", False)
         if not self._button_palette:
             self._button_palette = {
                 "base": "#AEBFF5",
@@ -1747,6 +1748,12 @@ class IntervalEditor(QWidget):
         layout.setSpacing(4)
 
         self.line_edit = QLineEdit(self)
+        name_setter = getattr(self.line_edit, "setObjectName", None)
+        if callable(name_setter):
+            try:
+                name_setter(f"intervalEditorDisplay_{uuid.uuid4().hex}")
+            except Exception:  # pragma: no cover - defensive
+                pass
         if hasattr(self, "setFocusProxy"):
             try:
                 self.setFocusProxy(self.line_edit)
@@ -1829,6 +1836,9 @@ class IntervalEditor(QWidget):
             "disabled_text": palette.get("disabled_text")
             or cls._default_palette.get("disabled_text", "#6B6B6B"),
         }
+        text_colour = updates.get("text")
+        if isinstance(text_colour, str) and text_colour.strip():
+            updates["border"] = text_colour.strip()
         cls._default_palette.update(updates)
         try:
             instances = list(cls._instances)
@@ -1836,7 +1846,7 @@ class IntervalEditor(QWidget):
             instances = []
         for widget in instances:
             if isinstance(widget, IntervalEditor):
-                widget.set_button_palette(**updates)
+                widget.set_button_palette(**updates, link_border_to_text=True)
 
     def _clamp(self, value: float) -> float:
         return max(self._min, min(self._max, float(value)))
@@ -2013,6 +2023,7 @@ class IntervalEditor(QWidget):
         text: Optional[str] = None,
         disabled: Optional[str] = None,
         disabled_text: Optional[str] = None,
+        link_border_to_text: bool = False,
     ) -> None:
         """Apply per-instance overrides for the step button palette."""
 
@@ -2030,13 +2041,27 @@ class IntervalEditor(QWidget):
             "disabled_text": disabled_text,
         }
         changed = False
+        text_changed = False
+        border_explicit = not link_border_to_text and isinstance(border, str) and border.strip()
         for key, value in updates.items():
             if isinstance(value, str):
                 candidate = value.strip()
                 if candidate and candidate != palette.get(key):
                     palette[key] = candidate
                     changed = True
+                    if key == "text":
+                        text_changed = True
+                    if key == "border" and not link_border_to_text:
+                        palette["_border_explicit"] = True
         if changed:
+            if text_changed and not border_explicit:
+                text_colour = palette.get("text")
+                if text_colour and palette.get("border") != text_colour:
+                    palette["border"] = text_colour
+                    palette["_border_explicit"] = False
+            elif link_border_to_text and palette.get("text"):
+                palette["border"] = palette["text"]
+                palette["_border_explicit"] = False
             self._apply_button_styles()
 
     def _apply_button_styles(self) -> None:
@@ -2045,22 +2070,23 @@ class IntervalEditor(QWidget):
         palette = getattr(self, "_button_palette", {}) or {}
         for key, fallback in IntervalEditor._default_palette.items():
             palette.setdefault(key, fallback)
+        text_color = palette.get("text", IntervalEditor._default_palette.get("text", "#000000"))
         stylesheet = (
             "QPushButton {"
             f"background-color: {palette['base']};"
-            f"border: 1px solid {palette['border']};"
+            "border: none;"
             "border-radius: 4px;"
             "font-size: 16px;"
             "font-weight: bold;"
-            f"color: {palette['text']};"
+            f"color: {text_color};"
             "}"
             "QPushButton:hover {"
             f"background-color: {palette['hover']};"
-            f"color: {palette['text']};"
+            f"color: {text_color};"
             "}"
             "QPushButton:pressed {"
             f"background-color: {palette['pressed']};"
-            f"color: {palette['text']};"
+            f"color: {text_color};"
             "}"
             "QPushButton:disabled {"
             f"background-color: {palette['disabled']};"
@@ -2099,24 +2125,48 @@ class IntervalEditor(QWidget):
                 if isinstance(value, str) and value.strip():
                     palette[key] = value.strip()
 
-        border_color = palette.get("text", "#000000")
-        hover_color = palette.get("hover", border_color)
-        focus_color = palette.get("pressed", border_color)
+        text_color = palette.get("text", "#000000")
+        border_color = text_color
+        hover_color = text_color
+        focus_color = text_color
         disabled_color = palette.get("disabled_text", "#6B6B6B")
 
-        stylesheet = (
-            "QLineEdit {"
-            f"border: 1px solid {border_color};"
+        padding = "2px 8px"
+        border_radius = "12px"
 
+        object_name = ""
+        name_getter = getattr(line_edit, "objectName", None)
+        if callable(name_getter):
+            try:
+                object_name = name_getter() or ""
+            except Exception:  # pragma: no cover - defensive
+                object_name = ""
+        if not object_name:
+            name_setter = getattr(line_edit, "setObjectName", None)
+            if callable(name_setter):
+                try:
+                    object_name = f"intervalEditorDisplay_{uuid.uuid4().hex}"
+                    name_setter(object_name)
+                except Exception:  # pragma: no cover - defensive
+                    object_name = ""
+        selector = f"QLineEdit#{object_name}" if object_name else "QLineEdit"
+
+        stylesheet = (
+            f"{selector} {{"
+            f"border: 1px solid {border_color};"
+            f"border-radius: {border_radius};"
+            f"color: {text_color};"
+            f"padding: {padding};"
             "}"
-            "QLineEdit:hover {"
+            f"{selector}:hover {{"
             f"border-color: {hover_color};"
             "}"
-            "QLineEdit:focus {"
+            f"{selector}:focus {{"
             f"border-color: {focus_color};"
             "}"
-            "QLineEdit:disabled {"
+            f"{selector}:disabled {{"
             f"border-color: {disabled_color};"
+            f"color: {disabled_color};"
             "}"
         )
 
