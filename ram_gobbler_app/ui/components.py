@@ -1754,6 +1754,8 @@ class IntervalEditor(QWidget):
                 pass
         if hasattr(self.line_edit, "setAlignment") and hasattr(Qt, "AlignRight"):
             self.line_edit.setAlignment(Qt.AlignRight)
+        if hasattr(self.line_edit, "setFixedHeight"):
+            self.line_edit.setFixedHeight(24)
         layout.addWidget(self.line_edit)
 
         btn_layout = QHBoxLayout()
@@ -1783,7 +1785,7 @@ class IntervalEditor(QWidget):
             if hasattr(btn, "setFixedWidth"):
                 btn.setFixedWidth(28)
             if hasattr(btn, "setFixedHeight"):
-                btn.setFixedHeight(26)
+                btn.setFixedHeight(24)
             if hasattr(btn, "setFont"):
                 font = btn.font()
                 font.setBold(True)
@@ -2105,9 +2107,7 @@ class IntervalEditor(QWidget):
         stylesheet = (
             "QLineEdit {"
             f"border: 1px solid {border_color};"
-            "border-radius: 8px;"
-            "padding: 2px 6px;"
-            "min-height: 26px;"
+
             "}"
             "QLineEdit:hover {"
             f"border-color: {hover_color};"
