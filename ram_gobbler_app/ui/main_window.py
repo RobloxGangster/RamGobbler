@@ -1048,6 +1048,13 @@ class MainWindow(QMainWindow):
         """Apply ``palette`` to the main window and supporting widgets."""
 
         self._active_palette = palette
+        IntervalEditor.apply_theme_palette(palette)
+        targets_table = getattr(self, "targets_table", None)
+        if targets_table is not None and hasattr(targets_table, "set_accent_color"):
+            try:
+                targets_table.set_accent_color(palette.get("accent", ""))
+            except Exception:
+                pass
         stylesheet = f"""
             * {{
                 font-family: "Segoe UI", "Helvetica Neue", sans-serif;
@@ -1240,13 +1247,6 @@ class MainWindow(QMainWindow):
                     dialog.apply_palette(palette)
                 except Exception:
                     continue
-        IntervalEditor.apply_theme_palette(palette)
-        targets_table = getattr(self, "targets_table", None)
-        if targets_table is not None and hasattr(targets_table, "set_accent_color"):
-            try:
-                targets_table.set_accent_color(palette.get("accent", ""))
-            except Exception:
-                pass
 
     def _init_tray(self):
         """Initialise the optional system-tray icon and context menu."""
